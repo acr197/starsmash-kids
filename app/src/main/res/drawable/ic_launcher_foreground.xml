@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Star shape for StarSmash Kids -->
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M54,18 L59.5,36.5 L79,36.5 L63.5,47.5 L69,66 L54,55 L39,66 L44.5,47.5 L29,36.5 L48.5,36.5 Z" />
+    <!-- Small star dots -->
+    <path
+        android:fillColor="#E040FB"
+        android:pathData="M28,22 L29.5,27 L35,27 L30.5,30 L32,35 L28,32 L24,35 L25.5,30 L21,27 L26.5,27 Z" />
+    <path
+        android:fillColor="#40C4FF"
+        android:pathData="M80,22 L81.5,27 L87,27 L82.5,30 L84,35 L80,32 L76,35 L77.5,30 L73,27 L78.5,27 Z" />
+    <path
+        android:fillColor="#FF6B6B"
+        android:pathData="M54,70 L55.5,75 L61,75 L56.5,78 L58,83 L54,80 L50,83 L51.5,78 L47,75 L52.5,75 Z" />
+</vector>
