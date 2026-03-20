@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        StarSmash Kids - Permission Policy
+        ===================================
+        This app requests only the minimum permissions required for the play experience.
+
+        VIBRATE: Used for optional haptic feedback on touch events. Marked optional
+                 so the app installs on devices without vibration hardware.
+
+        WAKE_LOCK: Keeps the screen awake during active play sessions when the
+                   "Keep Screen Awake" setting is enabled. This is a child-safety
+                   feature to prevent the screen locking mid-session.
+
+        INTENTIONALLY ABSENT:
+          - INTERNET: No network access whatsoever. No analytics, no telemetry, no ads.
+          - CAMERA / RECORD_AUDIO: Not used.
+          - READ/WRITE_EXTERNAL_STORAGE: Not used.
+          - ACCESS_FINE_LOCATION / COARSE_LOCATION: Not used.
+          - READ_CONTACTS: Not used.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE"
+        android:required="false" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.StarSmashKids"
+        android:dataExtractionRules="@xml/backup_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:allowBackup="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustNothing">
+            <!--
+                Portrait orientation is locked because:
+                1. The play canvas touch targets are calibrated for portrait use by young children.
+                2. Rotation events can disrupt the animation loop and cause a jarring experience.
+                3. Landscape mode may expose system bars in ways that confuse a child mid-play.
+            -->
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

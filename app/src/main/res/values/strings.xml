@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App name -->
+    <string name="app_name">StarSmash Kids</string>
+    <string name="app_tagline">A touch-play world for little hands</string>
+
+    <!-- Home screen -->
+    <string name="btn_start_smashing">Start Smashing!</string>
+    <string name="section_sound">Sound</string>
+    <string name="section_visual_effects">Visual Effects</string>
+    <string name="section_interaction">Interaction</string>
+    <string name="section_adaptive_features">Adaptive Features</string>
+
+    <!-- Settings labels -->
+    <string name="setting_sound">Sound</string>
+    <string name="setting_sound_mode">Sound Mode</string>
+    <string name="setting_sound_mode_calm">Calm</string>
+    <string name="setting_sound_mode_playful">Playful</string>
+    <string name="setting_effects_intensity">Effects Intensity</string>
+    <string name="setting_intensity_low">Low</string>
+    <string name="setting_intensity_medium">Medium</string>
+    <string name="setting_intensity_high">High</string>
+    <string name="setting_theme">Theme</string>
+    <string name="setting_theme_space">Space</string>
+    <string name="setting_theme_ocean">Ocean</string>
+    <string name="setting_theme_rainbow">Rainbow</string>
+    <string name="setting_theme_shapes">Shapes</string>
+    <string name="setting_keep_screen_awake">Keep Screen Awake</string>
+    <string name="setting_reduced_motion">Reduced Motion</string>
+    <string name="setting_full_emoji_mode">Full Emoji Mode</string>
+    <string name="setting_idle_demo">Idle Demo</string>
+    <string name="setting_adaptive_play">Adaptive Play</string>
+    <string name="setting_overstimulation_guard">Overstimulation Guard</string>
+    <string name="setting_haptics">Haptics (Vibration)</string>
+
+    <!-- Info dialog content -->
+    <string name="info_adaptive_play_title">Adaptive Play</string>
+    <string name="info_adaptive_play_message">Adaptive Play adjusts visuals and sounds in real time based on how your child is interacting. It uses simple rule-based logic to detect activity level — not machine learning or personal data collection.</string>
+    <string name="info_overstim_title">Overstimulation Guard</string>
+    <string name="info_overstim_message">Overstimulation Guard automatically softens the experience when play becomes too intense. If your child plays very energetically for more than 5 seconds, effects and volume are gently reduced. This is rule-based logic — no data is collected.</string>
+
+    <!-- Screen pinning card -->
+    <string name="screen_pinning_title">About Accidental Exits</string>
+    <string name="screen_pinning_body">StarSmash Kids runs in fullscreen immersive mode. However, Android does not allow apps to fully prevent children from exiting. For a fully locked session, use Android\'s built-in Screen Pinning (Settings → Security → Screen Pinning).</string>
+
+    <!-- Support -->
+    <string name="support_link_label">Support this project</string>
+    <string name="support_url">https://buymeacoffee.com/AndrewRy</string>
+
+    <!-- Play screen -->
+    <string name="exit_hint">Press back again to exit</string>
+
+    <!-- Accessibility -->
+    <string name="cd_info_icon">More information</string>
+    <string name="cd_start_button">Start the play session</string>
+</resources>
