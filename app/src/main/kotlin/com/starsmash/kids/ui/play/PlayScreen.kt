@@ -152,20 +152,25 @@ fun PlayScreen(
     }
 
     // Animation loop: update effect ages each frame, trigger recompose
-    var frameTime by remember { mutableLongStateOf(0L) }
     LaunchedEffect(Unit) {
+        var lastFrameTime = withFrameMillis { it }
         while (true) {
-            val dt = withFrameMillis { it } - frameTime
-            frameTime = withFrameMillis { it }
+            val currentFrameTime = withFrameMillis { it }
+            val dt = (currentFrameTime - lastFrameTime).coerceIn(0L, 100L)
+            lastFrameTime = currentFrameTime
 
             // Advance effect ages (dt in ms, maxAge in ms)
-            val deltaFraction = if (dt > 0) dt.toFloat() else 16f
-            effects.removeAll { effect ->
-                effect.age >= 1f
-            }
-            for (i in effects.indices) {
+            val deltaMs = if (dt > 0) dt.toFloat() else 16f
+
+            // Remove expired effects first
+            effects.removeAll { it.age >= 1f }
+
+            // Advance ages of remaining effects
+            val size = effects.size
+            for (i in 0 until size) {
+                if (i >= effects.size) break
                 val e = effects[i]
-                effects[i] = e.copy(age = (e.age + deltaFraction / e.maxAge).coerceAtMost(1f))
+                effects[i] = e.copy(age = (e.age + deltaMs / e.maxAge).coerceAtMost(1f))
             }
         }
     }

@@ -54,7 +54,11 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
         audioEngine.soundEnabled = settings.soundEnabled
         audioEngine.setSoundMode(settings.soundMode)
 
-        audioEngine.start()
+        try {
+            audioEngine.start()
+        } catch (_: Exception) {
+            // Audio is non-critical; silently degrade if initialization fails.
+        }
     }
 
     /**
