@@ -111,13 +111,17 @@ class AudioEngine {
     /** Count of tones currently "in flight" for polyphony capping. */
     private var activeCount = 0
 
-    private val audioThread = HandlerThread("StarSmashAudio").also { it.start() }
-    private val audioHandler = Handler(audioThread.looper)
+    private var audioThread: HandlerThread? = null
+    private var audioHandler: Handler? = null
 
     // ── Lifecycle ─────────────────────────────────────────────────────────
 
     fun start() {
-        audioHandler.post {
+        val thread = HandlerThread("StarSmashAudio").also { it.start() }
+        audioThread = thread
+        val handler = Handler(thread.looper)
+        audioHandler = handler
+        handler.post {
             try {
                 toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, activeVolume)
             } catch (e: RuntimeException) {
@@ -129,11 +133,13 @@ class AudioEngine {
     }
 
     fun stop() {
-        audioHandler.post {
+        audioHandler?.post {
             toneGenerator?.release()
             toneGenerator = null
         }
-        audioThread.quitSafely()
+        audioThread?.quitSafely()
+        audioThread = null
+        audioHandler = null
     }
 
     // ── Configuration ─────────────────────────────────────────────────────
@@ -146,7 +152,7 @@ class AudioEngine {
         if (isGuardActive == active) return
         isGuardActive = active
         activeVolume = if (active) GUARD_VOLUME else NORMAL_VOLUME
-        audioHandler.post {
+        audioHandler?.post {
             toneGenerator?.release()
             try {
                 toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, activeVolume)
@@ -170,7 +176,8 @@ class AudioEngine {
         val toneId = if (soundMode == SoundMode.CALM) mapping.calmTone else mapping.playfulTone
         val duration = if (soundMode == SoundMode.CALM) CALM_DURATION_MS else PLAYFUL_DURATION_MS
 
-        audioHandler.post {
+        val handler = audioHandler ?: return
+        handler.post {
             val gen = toneGenerator ?: return@post
 
             // Polyphony cap
@@ -188,7 +195,7 @@ class AudioEngine {
             } catch (e: Exception) {
                 // Silently ignore – audio is non-critical
             }
-            audioHandler.postDelayed({ activeCount = (activeCount - 1).coerceAtLeast(0) }, duration.toLong())
+            handler.postDelayed({ activeCount = (activeCount - 1).coerceAtLeast(0) }, duration.toLong())
         }
     }
 }
