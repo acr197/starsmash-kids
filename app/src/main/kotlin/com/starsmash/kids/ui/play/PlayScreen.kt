@@ -586,7 +586,9 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
             val midY = (effect.y + effect.y2) / 2f - 120f * effect.scale
             val path = Path().apply {
                 moveTo(effect.x, effect.y)
-                quadraticTo(midX, midY, effect.x2, effect.y2)
+                // Use quadraticBezierTo (works on all Compose UI versions; the
+                // newer quadraticTo overload is only available from 1.7+).
+                quadraticBezierTo(midX, midY, effect.x2, effect.y2)
             }
             val strokeW = effect.scale * 5f * (1f - progress * 0.7f)
             if (strokeW > 0f) {
