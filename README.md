@@ -41,7 +41,28 @@ Automatically softens effects if play becomes too chaotic.
 
 ---
 
-## Build
+## Download the APK (no build needed)
+
+Every push to this repo automatically builds a phone-installable debug APK
+via GitHub Actions. To grab it:
+
+1. Go to the **Actions** tab on GitHub.
+2. Click the most recent successful **Build APK** workflow run.
+3. Scroll to the **Artifacts** section and download `StarSmashKids-debug-apk`.
+4. Unzip it on your phone (or download on desktop and transfer) — you'll get
+   `StarSmashKids-debug.apk`.
+5. Open the APK with any APK installer app to install it. You may need to
+   allow "install from unknown sources" the first time.
+
+For a stable, shareable download, push a tag like `v1.0.0` and the workflow
+will additionally attach the APK to a GitHub **Release**.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+## Build locally
 
 ```bash
 ./gradlew assembleDebug
