@@ -37,22 +37,63 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
+      # NOTE: We intentionally do NOT use gradle/actions/setup-gradle here.
+      # Its remote build cache was returning HTTP 400 in CI and producing
+      # noisy "Failed to restore gradle-home-v1" warnings. The build is
+      # small enough that running gradle directly via ./gradlew is fast
+      # and far easier to debug.
+
+      - name: Show environment
+        run: |
+          echo "java -version:"
+          java -version
+          echo "gradle wrapper version:"
+          ./gradlew --version || true
+          echo "files:"
+          ls -la
+        shell: bash
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+        id: build
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleDebug \
+            --stacktrace \
+            --info \
+            --no-daemon 2>&1 | tee gradle-build.log
+        shell: bash
+
+      - name: Upload gradle build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build-log
+          path: gradle-build.log
+          if-no-files-found: warn
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            app/build/reports/**
+            app/build/outputs/logs/**
+            **/build/reports/**
+          if-no-files-found: ignore
 
       - name: Stage APK
+        if: success()
         run: |
           mkdir -p artifact
           cp app/build/outputs/apk/debug/app-debug.apk \
              artifact/StarSmashKids-debug.apk
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: StarSmashKids-debug-apk
@@ -60,7 +101,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APK to GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: success() && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: artifact/StarSmashKids-debug.apk
