@@ -199,12 +199,17 @@ fun PlayScreen(
                         }
 
                         val pointerEvents = event.changes.map { change ->
+                            // Note: pressure and touchMajor are not surfaced through
+                            // the Compose pointer API in a stable, cross-version way.
+                            // TouchClassifier doesn't actually consume pressure, and
+                            // touchMajor-based palm detection requires real MotionEvent
+                            // data we don't have here, so both are recorded as 0f.
                             TouchEvent(
                                 pointerId = change.id.value.toInt(),
                                 x = change.position.x,
                                 y = change.position.y,
-                                pressure = change.pressure,
-                                touchMajor = 0f, // Not available via Compose pointer API
+                                pressure = 0f,
+                                touchMajor = 0f,
                                 eventTime = change.uptimeMillis,
                                 action = if (!change.pressed && change.previousPressed) TouchAction.UP else action
                             )
