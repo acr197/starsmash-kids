@@ -6,20 +6,20 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
@@ -28,40 +28,52 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.starsmash.kids.settings.PlayTheme
-import com.starsmash.kids.touch.TouchAction
-import com.starsmash.kids.touch.TouchClassifier
-import com.starsmash.kids.touch.TouchEvent
 import com.starsmash.kids.touch.TouchEventType
-import com.starsmash.kids.touch.TouchFrame
 import com.starsmash.kids.ui.theme.OceanTheme
 import com.starsmash.kids.ui.theme.RainbowTheme
 import com.starsmash.kids.ui.theme.ShapesTheme
 import com.starsmash.kids.ui.theme.SpaceTheme
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.hypot
+import kotlin.math.max
 import kotlin.math.sin
 import kotlin.random.Random
 
 // ── Effect model ─────────────────────────────────────────────────────────────
 
 private enum class EffectType {
-    STAR_BURST, SPARKLE, RAINBOW_TRAIL, CONFETTI, RIPPLE_WAVE,
-    BUBBLE, SHAPE, ARC_BRIDGE
+    STAR_BURST, SPARKLE, RAINBOW_TRAIL, CONFETTI, RIPPLE_WAVE, BUBBLE
 }
 
 private data class Effect(
     val x: Float,
     val y: Float,
-    var age: Float,         // 0.0 = just born, 1.0 = fully dead
-    val maxAge: Float,      // ms before the effect is removed
+    var age: Float,
+    val maxAge: Float,
     val color: Color,
     val type: EffectType,
-    val scale: Float,       // size multiplier
+    val scale: Float,
     val velocityX: Float = 0f,
     val velocityY: Float = 0f,
-    val angle: Float = 0f,  // radians, for directional effects
-    val x2: Float = 0f,     // secondary coordinate (TwoFinger, arc end)
-    val y2: Float = 0f
+    val angle: Float = 0f
+)
+
+// ── Floating target model ────────────────────────────────────────────────────
+
+private enum class TargetShape { STAR, CIRCLE, SQUARE, TRIANGLE, HEART, DIAMOND }
+
+private data class FloatingTarget(
+    val id: Long,
+    var x: Float,
+    var y: Float,
+    var vx: Float,
+    var vy: Float,
+    val radius: Float,
+    val color: Color,
+    val shape: TargetShape,
+    var spin: Float,
+    val spinSpeed: Float
 )
 
 // ── PlayScreen ────────────────────────────────────────────────────────────────
@@ -69,14 +81,13 @@ private data class Effect(
 /**
  * Fullscreen child-facing play canvas.
  *
- * Design principles:
- *   - NO visible UI chrome (no buttons, no text, no nav bars).
- *   - Touch → immediate visual + audio feedback.
- *   - All effects live in a flat mutable list updated each animation frame.
- *   - Back gesture handling: requires TWO back presses within 2 seconds.
- *     Comment: Android 10+ does not permit an app to fully prevent back gestures;
- *     we use BackHandler to require a second press as a usability speedbump.
- *     Full prevention is not possible without using Android's Screen Pinning feature.
+ * Any touch (tap, drag, multi-finger, palm) spawns visual effects and plays a
+ * sound. Floating shapes drift across the screen; tapping one produces a
+ * larger reactive burst. Session difficulty (target speed and count) ramps up
+ * the longer the session lasts.
+ *
+ * Back-press handling requires three presses. The first and second presses
+ * show a small semi-transparent toast at the top which auto-dismisses.
  */
 @Composable
 fun PlayScreen(
@@ -86,57 +97,49 @@ fun PlayScreen(
     val playState by viewModel.playState.collectAsStateWithLifecycle()
     val settings = playState.settings
 
-    // Reload settings in case parent changed them after this VM was created
     LaunchedEffect(Unit) { viewModel.reloadSettings() }
 
-    // Screen size tracked for TouchClassifier initialization
     var screenSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // TouchClassifier – recreated if screen size changes
-    val classifier = remember(screenSize) {
-        if (screenSize == IntSize.Zero) null
-        else TouchClassifier(screenSize.width.toFloat(), screenSize.height.toFloat())
-    }
-
-    // Mutable list of live effects – mutated every frame
+    // Effects list + floating targets list. Both mutated from the animation
+    // loop and the pointerInput handler; SnapshotStateLists are thread-safe
+    // enough for the single-threaded Compose UI model.
     val effects = remember { mutableStateListOf<Effect>() }
+    val targets = remember { mutableStateListOf<FloatingTarget>() }
 
-    // Back-press exit guard
+    // Session start time drives difficulty escalation.
+    val sessionStart = remember { System.currentTimeMillis() }
+
+    // Back-press state: need 3 presses to exit. Toast shown between presses.
     var backPressCount by remember { mutableIntStateOf(0) }
-    var lastBackPressTime by remember { mutableLongStateOf(0L) }
-    var showExitHint by remember { mutableStateOf(false) }
+    var toastMessage by remember { mutableStateOf<String?>(null) }
 
-    // IMPORTANT: Android 10+ (gesture navigation) does not allow apps to fully
-    // intercept back gestures. BackHandler catches the system back button / back
-    // gesture event in Compose, but edge swipes that trigger Android's built-in
-    // gesture navigation happen BEFORE Compose sees them and cannot be intercepted.
-    // This double-press mechanism is a usability hint, not full prevention.
     BackHandler {
-        val now = System.currentTimeMillis()
-        if (backPressCount > 0 && now - lastBackPressTime < 2000L) {
-            // Second back press within 2 seconds – exit
-            onExit()
-        } else {
-            backPressCount = 1
-            lastBackPressTime = now
-            showExitHint = true
+        backPressCount += 1
+        when (backPressCount) {
+            1 -> toastMessage = "Press back 2 more times to exit"
+            2 -> toastMessage = "Press back 1 more time to exit"
+            else -> onExit()
         }
     }
 
-    // Hide exit hint after 2 seconds
-    LaunchedEffect(showExitHint) {
-        if (showExitHint) {
-            kotlinx.coroutines.delay(2000L)
-            showExitHint = false
+    // Auto-dismiss toast and reset counter after inactivity.
+    LaunchedEffect(backPressCount, toastMessage) {
+        if (toastMessage != null) {
+            kotlinx.coroutines.delay(2500L)
+            toastMessage = null
             backPressCount = 0
         }
     }
 
-    // Theme colors
     val backgroundColor = remember(settings.playTheme) { themeBackground(settings.playTheme) }
     val themeColors = remember(settings.playTheme) { themeColorPalette(settings.playTheme) }
 
-    // Effect base scale driven by settings intensity and adaptive play
+    // rememberUpdatedState so the long-lived pointerInput lambda always reads
+    // the latest values without being torn down and re-launched.
+    val currentThemeColors by rememberUpdatedState(themeColors)
+    val currentReducedMotion by rememberUpdatedState(settings.reducedMotion)
+
     val baseScale = remember(settings.effectsIntensity, playState.stimulusLevel, playState.isGuardActive) {
         val intensityMult = when (settings.effectsIntensity) {
             com.starsmash.kids.settings.EffectsIntensity.LOW -> 0.6f
@@ -149,27 +152,65 @@ fun PlayScreen(
         val guardMult = if (playState.isGuardActive) 0.6f else 1.0f
         (intensityMult * adaptiveMult * guardMult).coerceIn(0.2f, 2.5f)
     }
+    val currentBaseScale by rememberUpdatedState(baseScale)
 
-    // Animation loop: update effect ages each frame, trigger recompose
-    LaunchedEffect(Unit) {
+    // Animation loop: advance effect ages, move floating targets, spawn new
+    // ones as needed. Difficulty scales with elapsed session time.
+    LaunchedEffect(screenSize) {
+        if (screenSize == IntSize.Zero) return@LaunchedEffect
+        val width = screenSize.width.toFloat()
+        val height = screenSize.height.toFloat()
+        val rng = Random
+
         var lastFrameTime = withFrameMillis { it }
+        var nextTargetId = 0L
+
+        // Seed initial targets so the screen isn't empty on entry.
+        repeat(4) {
+            targets.add(spawnTarget(nextTargetId++, width, height, currentThemeColors, 1f, rng))
+        }
+
         while (true) {
             val currentFrameTime = withFrameMillis { it }
             val dt = (currentFrameTime - lastFrameTime).coerceIn(0L, 100L)
             lastFrameTime = currentFrameTime
-
-            // Advance effect ages (dt in ms, maxAge in ms)
             val deltaMs = if (dt > 0) dt.toFloat() else 16f
 
-            // Remove expired effects first
-            effects.removeAll { it.age >= 1f }
+            // Difficulty curve: 0 at 0s, 1 around 60s, clamped to ~1.6.
+            val elapsedSec = (currentFrameTime - sessionStart) / 1000f
+            val difficulty = (0.4f + elapsedSec / 60f).coerceAtMost(1.6f)
 
-            // Advance ages of remaining effects
-            val size = effects.size
-            for (i in 0 until size) {
+            // Advance effect ages.
+            effects.removeAll { it.age >= 1f }
+            val esize = effects.size
+            for (i in 0 until esize) {
                 if (i >= effects.size) break
                 val e = effects[i]
                 effects[i] = e.copy(age = (e.age + deltaMs / e.maxAge).coerceAtMost(1f))
+            }
+
+            // Move floating targets, wrap around screen edges.
+            val speedMul = 0.06f * difficulty
+            val tsize = targets.size
+            for (i in 0 until tsize) {
+                if (i >= targets.size) break
+                val t = targets[i]
+                var nx = t.x + t.vx * deltaMs * speedMul
+                var ny = t.y + t.vy * deltaMs * speedMul
+                val margin = t.radius + 20f
+                if (nx < -margin) nx = width + margin
+                if (nx > width + margin) nx = -margin
+                if (ny < -margin) ny = height + margin
+                if (ny > height + margin) ny = -margin
+                t.x = nx
+                t.y = ny
+                t.spin += t.spinSpeed * deltaMs * 0.001f
+            }
+
+            // Maintain a target count that grows with difficulty.
+            val desiredCount = (4 + (difficulty * 6).toInt()).coerceIn(4, 14)
+            while (targets.size < desiredCount) {
+                targets.add(spawnTarget(nextTargetId++, width, height, currentThemeColors, difficulty, rng))
             }
         }
     }
@@ -178,78 +219,110 @@ fun PlayScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(backgroundColor)
-            .onGloballyPositioned { coords ->
-                screenSize = coords.size
-            }
+            .onGloballyPositioned { coords -> screenSize = coords.size }
             .pointerInput(Unit) {
-                // Multi-touch tracking using awaitPointerEventScope
-                // All pointer events flow through here, building TouchFrames for the classifier
+                // Per-pointer last-known position for drag-trail spawning.
+                val lastPositions = mutableMapOf<Long, Offset>()
+
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        val c = classifier ?: continue
+                        val changes = event.changes
+                        val activeCount = changes.count { it.pressed }
 
-                        // Build a list of TouchEvent from the PointerInputChange list
-                        val action = when (event.type) {
-                            PointerEventType.Press -> TouchAction.DOWN
-                            PointerEventType.Move -> TouchAction.MOVE
-                            PointerEventType.Release -> TouchAction.UP
-                            else -> TouchAction.MOVE
+                        // Determine which pointers just went down, which are
+                        // moving, and which just lifted. Spawn appropriate
+                        // effects and audio events for each.
+                        var anyNewPress = false
+                        changes.forEach { change ->
+                            val id = change.id.value
+                            val pos = change.position
+                            val wasPressed = change.previousPressed
+                            val nowPressed = change.pressed
+
+                            if (nowPressed && !wasPressed) {
+                                // New touch down.
+                                anyNewPress = true
+                                lastPositions[id] = pos
+
+                                // Check if it landed on a floating target.
+                                val hitIdx = targets.indexOfLast { t ->
+                                    hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
+                                        .toFloat() <= t.radius + 18f
+                                }
+                                if (hitIdx >= 0) {
+                                    val hit = targets.removeAt(hitIdx)
+                                    spawnTargetBurst(effects, hit, currentThemeColors, currentBaseScale, currentReducedMotion)
+                                    viewModel.onTouchEvent(
+                                        TouchEventType.RapidTapCluster(pos.x, pos.y, 2),
+                                        activeCount
+                                    )
+                                } else {
+                                    spawnTapBurst(effects, pos.x, pos.y, currentThemeColors, currentBaseScale, currentReducedMotion)
+                                    val evtType = when {
+                                        activeCount >= 4 -> TouchEventType.PalmLikeBurst(pos.x, pos.y)
+                                        activeCount >= 3 -> TouchEventType.MultiTouchBurst(pos.x, pos.y, activeCount)
+                                        activeCount == 2 -> TouchEventType.TwoFingerTap(pos.x, pos.y, pos.x, pos.y)
+                                        else -> TouchEventType.SingleTap(pos.x, pos.y)
+                                    }
+                                    viewModel.onTouchEvent(evtType, activeCount)
+                                }
+                            } else if (nowPressed && wasPressed) {
+                                // Movement – spawn a trail if we moved enough.
+                                val last = lastPositions[id]
+                                if (last != null) {
+                                    val dist = hypot(
+                                        (pos.x - last.x).toDouble(),
+                                        (pos.y - last.y).toDouble()
+                                    ).toFloat()
+                                    if (dist > 18f) {
+                                        lastPositions[id] = pos
+                                        spawnTrail(effects, pos.x, pos.y, currentThemeColors, currentBaseScale)
+                                        viewModel.onTouchEvent(
+                                            TouchEventType.SingleDrag(pos.x, pos.y),
+                                            activeCount
+                                        )
+                                        // Opportunistic target hit-check on drag.
+                                        val hitIdx = targets.indexOfLast { t ->
+                                            hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
+                                                .toFloat() <= t.radius + 12f
+                                        }
+                                        if (hitIdx >= 0) {
+                                            val hit = targets.removeAt(hitIdx)
+                                            spawnTargetBurst(
+                                                effects, hit, currentThemeColors, currentBaseScale,
+                                                currentReducedMotion
+                                            )
+                                        }
+                                    }
+                                }
+                            } else if (!nowPressed && wasPressed) {
+                                lastPositions.remove(id)
+                            }
+
+                            change.consume()
                         }
 
-                        val pointerEvents = event.changes.map { change ->
-                            // Note: pressure and touchMajor are not surfaced through
-                            // the Compose pointer API in a stable, cross-version way.
-                            // TouchClassifier doesn't actually consume pressure, and
-                            // touchMajor-based palm detection requires real MotionEvent
-                            // data we don't have here, so both are recorded as 0f.
-                            TouchEvent(
-                                pointerId = change.id.value.toInt(),
-                                x = change.position.x,
-                                y = change.position.y,
-                                pressure = 0f,
-                                touchMajor = 0f,
-                                eventTime = change.uptimeMillis,
-                                action = if (!change.pressed && change.previousPressed) TouchAction.UP else action
-                            )
+                        // Extra sparkle when several fingers press simultaneously.
+                        if (anyNewPress && activeCount >= 3) {
+                            val cx = changes.filter { it.pressed }.map { it.position.x }.average().toFloat()
+                            val cy = changes.filter { it.pressed }.map { it.position.y }.average().toFloat()
+                            spawnRipple(effects, cx, cy, currentThemeColors, currentBaseScale)
                         }
 
-                        val frame = TouchFrame(
-                            pointers = pointerEvents,
-                            eventTime = event.changes.firstOrNull()?.uptimeMillis ?: 0L,
-                            action = action
-                        )
-
-                        val touchType = c.classify(frame) ?: continue
-
-                        // Spawn effects
-                        spawnEffects(
-                            type = touchType,
-                            effects = effects,
-                            colors = themeColors,
-                            baseScale = baseScale,
-                            reducedMotion = settings.reducedMotion,
-                            emojiMode = settings.fullEmojiMode,
-                            theme = settings.playTheme
-                        )
-
-                        // Notify ViewModel (audio + adaptive engine)
-                        viewModel.onTouchEvent(touchType, frame.pointerCount)
-
-                        // Consume all changes to prevent gesture conflicts
-                        event.changes.forEach { it.consume() }
+                        // Cap total effects.
+                        while (effects.size > 250) effects.removeAt(0)
                     }
                 }
             }
     ) {
-        // Canvas renders all live effects
         Canvas(modifier = Modifier.fillMaxSize()) {
-            effects.forEach { effect ->
-                drawEffect(effect, settings.reducedMotion)
-            }
+            // Draw floating targets first so effects sit on top.
+            targets.forEach { drawTarget(it) }
+            effects.forEach { drawEffect(it, settings.reducedMotion) }
         }
 
-        // Overstimulation guard overlay – subtle dimming
+        // Guard overlay (subtle dimming).
         if (playState.isGuardActive) {
             Box(
                 modifier = Modifier
@@ -258,241 +331,286 @@ fun PlayScreen(
             )
         }
 
-        // Exit hint overlay – shown after first back press
-        if (showExitHint) {
+        // Top toast for back-press warning. Non-blocking: doesn't cover play area.
+        val msg = toastMessage
+        if (msg != null) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.35f)),
-                contentAlignment = Alignment.Center
+                    .align(Alignment.TopCenter)
+                    .padding(top = 32.dp, start = 32.dp, end = 32.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 18.dp, vertical = 10.dp)
             ) {
                 Text(
-                    text = "Press back again to exit",
-                    color = Color.White.copy(alpha = 0.9f),
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(32.dp)
+                    text = msg,
+                    color = Color.White.copy(alpha = 0.95f),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
         }
     }
 }
 
-// ── Effect spawning ───────────────────────────────────────────────────────────
+// ── Target spawning and hit effects ──────────────────────────────────────────
 
-private fun spawnEffects(
-    type: TouchEventType,
+private fun spawnTarget(
+    id: Long,
+    width: Float,
+    height: Float,
+    colors: List<Color>,
+    difficulty: Float,
+    rng: Random
+): FloatingTarget {
+    val radius = 32f + rng.nextFloat() * 28f
+    val baseSpeed = 0.8f + rng.nextFloat() * 1.6f
+    val speed = baseSpeed * (0.8f + difficulty * 0.8f)
+    val angle = rng.nextFloat() * 2f * PI.toFloat()
+    return FloatingTarget(
+        id = id,
+        x = rng.nextFloat() * width,
+        y = rng.nextFloat() * height,
+        vx = cos(angle) * speed,
+        vy = sin(angle) * speed,
+        radius = radius,
+        color = colors[rng.nextInt(colors.size)],
+        shape = TargetShape.values()[rng.nextInt(TargetShape.values().size)],
+        spin = rng.nextFloat() * 2f * PI.toFloat(),
+        spinSpeed = (rng.nextFloat() - 0.5f) * 2f
+    )
+}
+
+private fun spawnTapBurst(
     effects: MutableList<Effect>,
+    x: Float,
+    y: Float,
     colors: List<Color>,
     baseScale: Float,
-    reducedMotion: Boolean,
-    emojiMode: Boolean,
-    theme: PlayTheme
+    reducedMotion: Boolean
 ) {
-    val maxAge = if (reducedMotion) 600f else 900f
-    val count = if (reducedMotion) 4 else 8
     val rng = Random
-
-    fun randomColor() = colors[rng.nextInt(colors.size)]
-
-    when (type) {
-        is TouchEventType.SingleTap -> {
-            repeat(count) { i ->
-                val angle = (i.toFloat() / count) * 2f * PI.toFloat()
-                effects.add(
-                    Effect(
-                        x = type.x, y = type.y,
-                        age = 0f, maxAge = maxAge,
-                        color = randomColor(),
-                        type = EffectType.STAR_BURST,
-                        scale = baseScale,
-                        velocityX = cos(angle) * 4f,
-                        velocityY = sin(angle) * 4f,
-                        angle = angle
-                    )
-                )
-            }
-            // Central sparkle
-            effects.add(
-                Effect(
-                    x = type.x, y = type.y,
-                    age = 0f, maxAge = maxAge * 0.7f,
-                    color = randomColor(),
-                    type = EffectType.SPARKLE,
-                    scale = baseScale * 1.2f
-                )
+    val maxAge = if (reducedMotion) 600f else 900f
+    val count = if (reducedMotion) 5 else 10
+    repeat(count) { i ->
+        val angle = (i.toFloat() / count) * 2f * PI.toFloat()
+        effects.add(
+            Effect(
+                x = x, y = y,
+                age = 0f, maxAge = maxAge,
+                color = colors[rng.nextInt(colors.size)],
+                type = EffectType.STAR_BURST,
+                scale = baseScale,
+                velocityX = cos(angle) * 4f,
+                velocityY = sin(angle) * 4f,
+                angle = angle
             )
-        }
-
-        is TouchEventType.SingleDrag -> {
-            effects.add(
-                Effect(
-                    x = type.x, y = type.y,
-                    age = 0f, maxAge = if (reducedMotion) 300f else 500f,
-                    color = randomColor(),
-                    type = EffectType.RAINBOW_TRAIL,
-                    scale = baseScale
-                )
-            )
-        }
-
-        is TouchEventType.TwoFingerTap -> {
-            // Mirrored bursts from both touch points + connecting arc
-            listOf(Pair(type.x1, type.y1), Pair(type.x2, type.y2)).forEach { (bx, by) ->
-                repeat(count / 2) { i ->
-                    val angle = (i.toFloat() / (count / 2)) * 2f * PI.toFloat()
-                    effects.add(
-                        Effect(
-                            x = bx, y = by,
-                            age = 0f, maxAge = maxAge,
-                            color = randomColor(),
-                            type = EffectType.STAR_BURST,
-                            scale = baseScale,
-                            velocityX = cos(angle) * 3f,
-                            velocityY = sin(angle) * 3f
-                        )
-                    )
-                }
-            }
-            // Arc bridge between two points
-            effects.add(
-                Effect(
-                    x = type.x1, y = type.y1,
-                    age = 0f, maxAge = maxAge * 1.2f,
-                    color = randomColor(),
-                    type = EffectType.ARC_BRIDGE,
-                    scale = baseScale,
-                    x2 = type.x2, y2 = type.y2
-                )
-            )
-        }
-
-        is TouchEventType.TwoFingerDrag -> {
-            effects.add(
-                Effect(
-                    x = type.x1, y = type.y1,
-                    age = 0f, maxAge = 400f,
-                    color = randomColor(),
-                    type = EffectType.RAINBOW_TRAIL,
-                    scale = baseScale * 0.8f
-                )
-            )
-            effects.add(
-                Effect(
-                    x = type.x2, y = type.y2,
-                    age = 0f, maxAge = 400f,
-                    color = randomColor(),
-                    type = EffectType.RAINBOW_TRAIL,
-                    scale = baseScale * 0.8f
-                )
-            )
-        }
-
-        is TouchEventType.MultiTouchBurst -> {
-            // Confetti explosion + multi-star spray
-            val burstCount = if (reducedMotion) 10 else 20
-            repeat(burstCount) {
-                val angle = rng.nextFloat() * 2f * PI.toFloat()
-                val speed = rng.nextFloat() * 8f + 2f
-                effects.add(
-                    Effect(
-                        x = type.x, y = type.y,
-                        age = 0f, maxAge = maxAge * 1.2f,
-                        color = randomColor(),
-                        type = EffectType.CONFETTI,
-                        scale = baseScale,
-                        velocityX = cos(angle) * speed,
-                        velocityY = sin(angle) * speed,
-                        angle = rng.nextFloat() * 2f * PI.toFloat()
-                    )
-                )
-            }
-        }
-
-        is TouchEventType.PalmLikeBurst -> {
-            // Full-screen ripple wave + large confetti
-            effects.add(
-                Effect(
-                    x = type.x, y = type.y,
-                    age = 0f, maxAge = maxAge * 1.5f,
-                    color = randomColor(),
-                    type = EffectType.RIPPLE_WAVE,
-                    scale = baseScale * 2f
-                )
-            )
-            val confettiCount = if (reducedMotion) 15 else 35
-            repeat(confettiCount) {
-                val angle = rng.nextFloat() * 2f * PI.toFloat()
-                val speed = rng.nextFloat() * 12f + 3f
-                effects.add(
-                    Effect(
-                        x = type.x, y = type.y,
-                        age = 0f, maxAge = maxAge * 1.3f,
-                        color = randomColor(),
-                        type = EffectType.CONFETTI,
-                        scale = baseScale * 1.4f,
-                        velocityX = cos(angle) * speed,
-                        velocityY = sin(angle) * speed,
-                        angle = rng.nextFloat() * 2f * PI.toFloat()
-                    )
-                )
-            }
-        }
-
-        is TouchEventType.RapidTapCluster -> {
-            // Bouncing energetic stars
-            val starCount = if (reducedMotion) 6 else (type.tapCount * 2).coerceAtMost(16)
-            repeat(starCount) {
-                val angle = rng.nextFloat() * 2f * PI.toFloat()
-                val speed = rng.nextFloat() * 10f + 4f
-                effects.add(
-                    Effect(
-                        x = type.x, y = type.y,
-                        age = 0f, maxAge = maxAge,
-                        color = randomColor(),
-                        type = EffectType.STAR_BURST,
-                        scale = baseScale * 1.3f,
-                        velocityX = cos(angle) * speed,
-                        velocityY = sin(angle) * speed,
-                        angle = angle
-                    )
-                )
-            }
-        }
-
-        is TouchEventType.EdgeEntrySwipe -> {
-            // Subtle bubble puff – less intense since this may be an accidental edge swipe
-            repeat(4) {
-                val angle = rng.nextFloat() * 2f * PI.toFloat()
-                effects.add(
-                    Effect(
-                        x = type.x, y = type.y,
-                        age = 0f, maxAge = 400f,
-                        color = randomColor().copy(alpha = 0.6f),
-                        type = EffectType.BUBBLE,
-                        scale = baseScale * 0.5f,
-                        velocityX = cos(angle) * 2f,
-                        velocityY = sin(angle) * 2f
-                    )
-                )
-            }
-        }
+        )
     }
+    effects.add(
+        Effect(
+            x = x, y = y,
+            age = 0f, maxAge = maxAge * 0.7f,
+            color = colors[rng.nextInt(colors.size)],
+            type = EffectType.SPARKLE,
+            scale = baseScale * 1.4f
+        )
+    )
+}
 
-    // Cap total effects for performance
-    val maxEffects = 200
-    while (effects.size > maxEffects) {
-        effects.removeAt(0)
+private fun spawnTrail(
+    effects: MutableList<Effect>,
+    x: Float,
+    y: Float,
+    colors: List<Color>,
+    baseScale: Float
+) {
+    val rng = Random
+    effects.add(
+        Effect(
+            x = x, y = y,
+            age = 0f, maxAge = 500f,
+            color = colors[rng.nextInt(colors.size)],
+            type = EffectType.RAINBOW_TRAIL,
+            scale = baseScale
+        )
+    )
+}
+
+private fun spawnRipple(
+    effects: MutableList<Effect>,
+    x: Float,
+    y: Float,
+    colors: List<Color>,
+    baseScale: Float
+) {
+    val rng = Random
+    effects.add(
+        Effect(
+            x = x, y = y,
+            age = 0f, maxAge = 1200f,
+            color = colors[rng.nextInt(colors.size)],
+            type = EffectType.RIPPLE_WAVE,
+            scale = baseScale * 2.2f
+        )
+    )
+    repeat(14) {
+        val angle = rng.nextFloat() * 2f * PI.toFloat()
+        val speed = rng.nextFloat() * 10f + 3f
+        effects.add(
+            Effect(
+                x = x, y = y,
+                age = 0f, maxAge = 1000f,
+                color = colors[rng.nextInt(colors.size)],
+                type = EffectType.CONFETTI,
+                scale = baseScale,
+                velocityX = cos(angle) * speed,
+                velocityY = sin(angle) * speed,
+                angle = rng.nextFloat() * 2f * PI.toFloat()
+            )
+        )
     }
 }
 
-// ── Draw functions ────────────────────────────────────────────────────────────
+private fun spawnTargetBurst(
+    effects: MutableList<Effect>,
+    hit: FloatingTarget,
+    colors: List<Color>,
+    baseScale: Float,
+    reducedMotion: Boolean
+) {
+    val rng = Random
+    val count = if (reducedMotion) 12 else 22
+    repeat(count) {
+        val angle = rng.nextFloat() * 2f * PI.toFloat()
+        val speed = rng.nextFloat() * 9f + 3f
+        effects.add(
+            Effect(
+                x = hit.x, y = hit.y,
+                age = 0f, maxAge = 1100f,
+                color = if (rng.nextBoolean()) hit.color else colors[rng.nextInt(colors.size)],
+                type = EffectType.CONFETTI,
+                scale = baseScale * 1.2f,
+                velocityX = cos(angle) * speed,
+                velocityY = sin(angle) * speed,
+                angle = rng.nextFloat() * 2f * PI.toFloat()
+            )
+        )
+    }
+    effects.add(
+        Effect(
+            x = hit.x, y = hit.y,
+            age = 0f, maxAge = 900f,
+            color = hit.color,
+            type = EffectType.SPARKLE,
+            scale = baseScale * 2f
+        )
+    )
+    effects.add(
+        Effect(
+            x = hit.x, y = hit.y,
+            age = 0f, maxAge = 1000f,
+            color = hit.color,
+            type = EffectType.RIPPLE_WAVE,
+            scale = baseScale * 1.5f
+        )
+    )
+}
+
+// ── Draw ─────────────────────────────────────────────────────────────────────
+
+private fun DrawScope.drawTarget(t: FloatingTarget) {
+    val c = t.color
+    when (t.shape) {
+        TargetShape.CIRCLE -> {
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(c, c.copy(alpha = 0.4f)),
+                    center = Offset(t.x, t.y),
+                    radius = t.radius
+                ),
+                radius = t.radius,
+                center = Offset(t.x, t.y)
+            )
+            drawCircle(
+                color = Color.White.copy(alpha = 0.7f),
+                radius = t.radius * 0.25f,
+                center = Offset(t.x - t.radius * 0.3f, t.y - t.radius * 0.3f)
+            )
+        }
+        TargetShape.STAR -> {
+            val points = 5
+            val outer = t.radius
+            val inner = t.radius * 0.45f
+            val path = Path()
+            for (i in 0 until points * 2) {
+                val r = if (i % 2 == 0) outer else inner
+                val a = t.spin + i * PI.toFloat() / points - PI.toFloat() / 2f
+                val px = t.x + cos(a) * r
+                val py = t.y + sin(a) * r
+                if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+            }
+            path.close()
+            drawPath(path = path, color = c)
+        }
+        TargetShape.SQUARE -> {
+            // Axis-aligned rounded square; spin ignored for simplicity.
+            val s = t.radius * 1.6f
+            drawRect(
+                color = c,
+                topLeft = Offset(t.x - s / 2f, t.y - s / 2f),
+                size = Size(s, s)
+            )
+        }
+        TargetShape.TRIANGLE -> {
+            val r = t.radius
+            val path = Path()
+            for (i in 0 until 3) {
+                val a = t.spin + i * 2f * PI.toFloat() / 3f - PI.toFloat() / 2f
+                val px = t.x + cos(a) * r
+                val py = t.y + sin(a) * r
+                if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+            }
+            path.close()
+            drawPath(path = path, color = c)
+        }
+        TargetShape.HEART -> {
+            val r = t.radius
+            val path = Path()
+            // Simple heart built from two circles and a triangle approximation.
+            val cx = t.x
+            val cy = t.y
+            path.moveTo(cx, cy + r * 0.8f)
+            path.cubicTo(
+                cx - r * 1.4f, cy + r * 0.1f,
+                cx - r * 0.6f, cy - r * 0.9f,
+                cx, cy - r * 0.2f
+            )
+            path.cubicTo(
+                cx + r * 0.6f, cy - r * 0.9f,
+                cx + r * 1.4f, cy + r * 0.1f,
+                cx, cy + r * 0.8f
+            )
+            path.close()
+            drawPath(path = path, color = c)
+        }
+        TargetShape.DIAMOND -> {
+            val r = t.radius
+            val path = Path()
+            path.moveTo(t.x, t.y - r)
+            path.lineTo(t.x + r * 0.8f, t.y)
+            path.lineTo(t.x, t.y + r)
+            path.lineTo(t.x - r * 0.8f, t.y)
+            path.close()
+            drawPath(path = path, color = c)
+        }
+    }
+}
 
 private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
     val alpha = (1f - effect.age).coerceIn(0f, 1f)
     if (alpha <= 0f) return
 
-    // Positional update: age-based movement (effects move along velocity vector)
     val progress = effect.age
     val px = effect.x + effect.velocityX * progress * effect.maxAge * 0.06f
     val py = effect.y + effect.velocityY * progress * effect.maxAge * 0.06f
@@ -501,51 +619,39 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
 
     when (effect.type) {
         EffectType.STAR_BURST -> {
-            val radius = effect.scale * 20f * (1f + progress * 1.5f)
-            drawCircle(
-                color = color,
-                radius = radius,
-                center = Offset(px, py)
-            )
-            // Star points
+            val radius = effect.scale * 18f * (1f + progress * 1.5f)
+            drawCircle(color = color, radius = radius, center = Offset(px, py))
             if (!reducedMotion) {
                 val pointRadius = radius * 0.4f
                 for (i in 0 until 5) {
                     val a = (i * 2f * PI / 5f + effect.angle).toFloat()
-                    val sx = px + cos(a) * radius
-                    val sy = py + sin(a) * radius
                     drawCircle(
                         color = color,
                         radius = pointRadius,
-                        center = Offset(sx, sy)
+                        center = Offset(px + cos(a) * radius, py + sin(a) * radius)
                     )
                 }
             }
         }
-
         EffectType.SPARKLE -> {
-            val r = effect.scale * 30f * (1f - progress * 0.3f)
+            val r = effect.scale * 34f * (1f - progress * 0.3f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(color, Color.Transparent),
                     center = Offset(px, py),
-                    radius = r
+                    radius = max(r, 1f)
                 ),
-                radius = r,
+                radius = max(r, 1f),
                 center = Offset(px, py)
             )
         }
-
         EffectType.RAINBOW_TRAIL -> {
-            val r = effect.scale * 12f * (1f - progress * 0.5f)
+            val r = effect.scale * 14f * (1f - progress * 0.5f)
             drawCircle(color = color, radius = r, center = Offset(px, py))
         }
-
         EffectType.CONFETTI -> {
             val size = effect.scale * 14f * (1f - progress * 0.2f)
             if (!reducedMotion) {
-                // Rotate confetti square
-                val rot = effect.angle + progress * 4f
                 drawRect(
                     color = color,
                     topLeft = Offset(px - size / 2f, py - size / 2f),
@@ -555,10 +661,9 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
                 drawCircle(color = color, radius = size / 2f, center = Offset(px, py))
             }
         }
-
         EffectType.RIPPLE_WAVE -> {
-            val r = effect.scale * 80f * (0.3f + progress * 1.5f)
-            val strokeWidth = effect.scale * 6f * (1f - progress)
+            val r = effect.scale * 90f * (0.2f + progress * 1.6f)
+            val strokeWidth = effect.scale * 7f * (1f - progress)
             if (strokeWidth > 0f) {
                 drawCircle(
                     color = color,
@@ -568,7 +673,6 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
                 )
             }
         }
-
         EffectType.BUBBLE -> {
             val r = effect.scale * 18f * (0.5f + progress * 0.8f)
             drawCircle(
@@ -577,31 +681,6 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
                 center = Offset(px, py),
                 style = Stroke(width = 3f)
             )
-        }
-
-        EffectType.SHAPE -> {
-            val r = effect.scale * 20f
-            drawCircle(color = color, radius = r, center = Offset(px, py))
-        }
-
-        EffectType.ARC_BRIDGE -> {
-            // Quadratic bezier arc between (x,y) and (x2,y2)
-            val midX = (effect.x + effect.x2) / 2f
-            val midY = (effect.y + effect.y2) / 2f - 120f * effect.scale
-            val path = Path().apply {
-                moveTo(effect.x, effect.y)
-                // Use quadraticBezierTo (works on all Compose UI versions; the
-                // newer quadraticTo overload is only available from 1.7+).
-                quadraticBezierTo(midX, midY, effect.x2, effect.y2)
-            }
-            val strokeW = effect.scale * 5f * (1f - progress * 0.7f)
-            if (strokeW > 0f) {
-                drawPath(
-                    path = path,
-                    color = color,
-                    style = Stroke(width = strokeW, cap = StrokeCap.Round)
-                )
-            }
         }
     }
 }
@@ -627,3 +706,4 @@ private fun themeColorPalette(theme: PlayTheme): List<Color> = when (theme) {
     PlayTheme.RAINBOW -> RainbowTheme.colors
     PlayTheme.SHAPES -> ShapesTheme.colors
 }
+
