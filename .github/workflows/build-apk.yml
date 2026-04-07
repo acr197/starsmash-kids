@@ -175,3 +175,20 @@ jobs:
           files: artifact/StarSmashKids-debug.apk
           draft: false
           generate_release_notes: true
+
+      # Rolling "latest" release on every push to main, so the APK is always
+      # downloadable from the repo's Releases page without hunting through the
+      # Actions tab. The release is overwritten on each main build.
+      - name: Publish APK to rolling 'latest' Release (main only)
+        if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest debug build
+          files: artifact/StarSmashKids-debug.apk
+          draft: false
+          prerelease: true
+          body: |
+            Auto-built debug APK from the latest commit on `main`.
+            Built from commit ${{ github.sha }}.
+          fail_on_unmatched_files: true
