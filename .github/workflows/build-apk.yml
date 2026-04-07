@@ -99,14 +99,37 @@ jobs:
             const fs = require('fs');
             const full = fs.readFileSync('gradle-build.log', 'utf8');
             const lines = full.split('\n');
-            const tail = lines.slice(-300).join('\n');
+
+            // Extract anything that looks like a kotlinc / javac / aapt2 error
+            // line plus surrounding context. Kotlin emits lines starting with
+            // "e: file://" or "e: ", javac with "error:", aapt2 with "ERROR:".
+            const errPattern = /^(e: |w: |error:|ERROR:|FAILURE|What went wrong|Caused by:|> Task :.*FAILED)/;
+            const errIdx = [];
+            lines.forEach((l, i) => { if (errPattern.test(l)) errIdx.push(i); });
+            const ctx = new Set();
+            errIdx.forEach(i => {
+              for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 8); j++) ctx.add(j);
+            });
+            const errSlice = [...ctx].sort((a, b) => a - b)
+              .map(i => `${String(i + 1).padStart(5, ' ')}: ${lines[i]}`)
+              .join('\n');
+
+            const tail = lines.slice(-200).join('\n');
             const body = [
-              '### Build debug APK — failure log tail',
+              '### Build debug APK — failure log',
               '',
-              'Last 300 lines of `gradle-build.log` from run',
-              `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `Total log lines: ${lines.length}`,
               '',
-              '<details><summary>gradle-build.log (tail)</summary>',
+              '<details open><summary>Errors and warnings (with context)</summary>',
+              '',
+              '```',
+              errSlice || '(no error/warning lines matched)',
+              '```',
+              '',
+              '</details>',
+              '',
+              '<details><summary>gradle-build.log (last 200 lines)</summary>',
               '',
               '```',
               tail,
