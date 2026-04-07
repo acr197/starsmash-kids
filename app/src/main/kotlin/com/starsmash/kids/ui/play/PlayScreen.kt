@@ -37,7 +37,6 @@ import com.starsmash.kids.ui.theme.OceanTheme
 import com.starsmash.kids.ui.theme.RainbowTheme
 import com.starsmash.kids.ui.theme.ShapesTheme
 import com.starsmash.kids.ui.theme.SpaceTheme
-import kotlinx.coroutines.withFrameMillis
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
