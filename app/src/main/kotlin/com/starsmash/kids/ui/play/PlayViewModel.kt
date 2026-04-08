@@ -6,7 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.starsmash.kids.adaptation.AdaptivePlayEngine
 import com.starsmash.kids.adaptation.OverstimulationGuard
-import com.starsmash.kids.audio.AudioEngine
+import com.starsmash.kids.audio.AudioEngineHolder
 import com.starsmash.kids.settings.AppSettings
 import com.starsmash.kids.touch.TouchEventType
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,7 +43,7 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
 
     private val adaptiveEngine = AdaptivePlayEngine()
     private val overstimGuard = OverstimulationGuard()
-    val audioEngine = AudioEngine(application.applicationContext)
+    val audioEngine = AudioEngineHolder.get(application.applicationContext)
 
     init {
         val settings = AppSettings.load(application)
@@ -130,9 +130,20 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Sets the music tempo to reflect in-game progression. Called from
+     * PlayScreen each animation frame with a smooth ramp value in [1.0, 1.4].
+     */
+    fun setMusicSpeed(speed: Float) {
+        audioEngine.setMusicSpeed(speed)
+    }
+
     override fun onCleared() {
         super.onCleared()
-        audioEngine.stop()
+        // The AudioEngine is application-scoped (shared with the menu),
+        // so we do NOT stop it here. Just reset the normal playback speed
+        // so leaving the play screen returns the menu music to 1.0x.
+        audioEngine.setMusicSpeed(1.0f)
         adaptiveEngine.reset()
         overstimGuard.reset()
     }

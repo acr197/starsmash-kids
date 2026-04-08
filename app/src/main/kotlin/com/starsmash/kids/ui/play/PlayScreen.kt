@@ -31,7 +31,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.starsmash.kids.settings.EffectsIntensity
+import com.starsmash.kids.settings.HighScoreStore
 import com.starsmash.kids.settings.PlayTheme
+import com.starsmash.kids.settings.SmashCategory
+import com.starsmash.kids.settings.StartingDifficulty
 import com.starsmash.kids.settings.TrailLength
 import com.starsmash.kids.touch.TouchEventType
 import kotlin.math.*
@@ -73,12 +76,26 @@ private data class FloatingTarget(
     var dirChangeTimer: Float
 )
 
-// Kid-friendly emoji pool
-private val EMOJI_POOL = listOf(
-    "🚒", "🚚", "🚜", "🦖", "🐶", "🐱", "🐘", "🐵", "🐻", "🧸",
-    "🎈", "⭐", "🚀", "🦄", "🦁", "🐙", "🐬", "🏆", "🎂", "🌟",
-    "💫", "🎀", "🎠", "🌈"
+// Categorised emoji pools. The child's selected set of [SmashCategory] is
+// unioned at runtime into a single pool to sample from.
+private val CATEGORY_EMOJI: Map<SmashCategory, List<String>> = mapOf(
+    SmashCategory.EMOJI to listOf("⭐", "🌟", "💫", "🎈", "🎀", "🎠", "🌈", "🏆", "🎂", "🎁"),
+    SmashCategory.DINOSAURS to listOf("🦖", "🦕", "🐊", "🦎"),
+    SmashCategory.TRUCKS to listOf("🚒", "🚚", "🚜", "🚛", "🚗", "🚕", "🏎️", "🚓", "🚌"),
+    SmashCategory.ANIMALS to listOf("🐶", "🐱", "🐘", "🐵", "🐻", "🦁", "🐙", "🐬", "🦄", "🐰", "🐼", "🦊", "🐸"),
+    SmashCategory.TOYS to listOf("🧸", "🪀", "🪁", "🎮", "🪅", "🎨", "🎲", "🧩"),
+    SmashCategory.FOOD to listOf("🍎", "🍌", "🍓", "🍕", "🍩", "🍪", "🍦", "🧁", "🍭"),
+    SmashCategory.SPACE to listOf("🚀", "🛸", "🪐", "🌙", "☄️", "👾", "🌠"),
+    // SHAPES is handled via the geometric TargetKind path, not emoji.
+    SmashCategory.SHAPES to emptyList()
 )
+
+/** Build the active emoji pool for a settings snapshot. Falls back to EMOJI
+ *  if the user unselected everything that produces emoji targets. */
+private fun buildEmojiPool(categories: Set<SmashCategory>): List<String> {
+    val pool = categories.flatMap { CATEGORY_EMOJI[it] ?: emptyList() }
+    return if (pool.isEmpty()) CATEGORY_EMOJI[SmashCategory.EMOJI]!! else pool
+}
 
 // ── PlayScreen ────────────────────────────────────────────────────────────────
 
@@ -111,13 +128,20 @@ fun PlayScreen(
     // Elapsed seconds since play started, updated once per frame from withFrameMillis.
     // Used as the single source of truth for both gameplay and background timing.
     var elapsedSecState by remember { mutableFloatStateOf(0f) }
+    // Exit dialog: shown on third back press, lets the user save a high score.
+    var showExitDialog by remember { mutableStateOf(false) }
+
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     BackHandler {
         backPressCount += 1
         when (backPressCount) {
             1 -> toastMessage = "Press back 2 more times to exit"
             2 -> toastMessage = "Press back 1 more time to exit"
-            else -> onExit()
+            else -> {
+                // Open the exit dialog instead of calling onExit() directly.
+                showExitDialog = true
+            }
         }
     }
 
@@ -163,11 +187,13 @@ fun PlayScreen(
     }
 
     // Trail length multiplier - how long drag trails persist on screen.
-    val trailLifeMul = when (settings.trailLength) {
+    // When reducedMotion is on, every trail is further cut to 25%.
+    val trailLifeMulBase = when (settings.trailLength) {
         TrailLength.SHORT -> 0.5f
         TrailLength.MEDIUM -> 1.0f
         TrailLength.LONG -> 2.2f
     }
+    val trailLifeMul = trailLifeMulBase * if (settings.reducedMotion) 0.25f else 1f
     val currentTrailLifeMul by rememberUpdatedState(trailLifeMul)
 
     // Intensity also scales burst travel distance and lifetime.
@@ -179,7 +205,28 @@ fun PlayScreen(
     val currentEffectLifeMul by rememberUpdatedState(effectLifeMul)
 
     val trailSoundEnabled = settings.trailSoundEnabled
-    val fullEmojiMode = settings.fullEmojiMode
+
+    // Build the current emoji pool and geometric-shape flag from the user's
+    // smash category selection. Recomputed whenever the set changes.
+    val smashCategories = settings.smashCategories
+    val emojiPool = remember(smashCategories) { buildEmojiPool(smashCategories) }
+    val currentEmojiPool by rememberUpdatedState(emojiPool)
+    val shapesAllowed = SmashCategory.SHAPES in smashCategories
+    val currentShapesAllowed by rememberUpdatedState(shapesAllowed)
+
+    // Starting difficulty affects how soon targets appear and the initial
+    // difficulty floor. GENTLE keeps the original 5s wait; FAST drops to 1s
+    // and starts difficulty already partway up the ramp.
+    val startDelaySec = when (settings.startingDifficulty) {
+        StartingDifficulty.GENTLE -> 5f
+        StartingDifficulty.MEDIUM -> 2.5f
+        StartingDifficulty.FAST -> 1f
+    }
+    val difficultyStart = when (settings.startingDifficulty) {
+        StartingDifficulty.GENTLE -> 0.4f
+        StartingDifficulty.MEDIUM -> 0.75f
+        StartingDifficulty.FAST -> 1.0f
+    }
 
     // Animation loop: advances effect ages, moves targets, spawns new ones.
     // CRITICAL: elapsed time must be relative to a frame-time baseline captured
@@ -195,6 +242,7 @@ fun PlayScreen(
         val firstFrameTime = withFrameMillis { it }
         var lastFrameTime = firstFrameTime
         var nextTargetId = 0L
+        var lastMusicSpeed = 1.0f
 
         while (true) {
             val currentFrameTime = withFrameMillis { it }
@@ -204,7 +252,17 @@ fun PlayScreen(
 
             val elapsedSec = (currentFrameTime - firstFrameTime) / 1000f
             elapsedSecState = elapsedSec
-            val difficulty = (0.4f + elapsedSec / 60f).coerceAtMost(1.6f)
+            // Difficulty ramps from the picked floor up to 1.6 over ~60s.
+            val difficulty = (difficultyStart + elapsedSec / 60f).coerceAtMost(1.6f)
+
+            // Music tempo ramps smoothly from 1.0x to 1.35x over ~2 minutes,
+            // then caps. Only update the engine once the value has changed
+            // meaningfully to avoid spamming MediaPlayer.setPlaybackParams.
+            val targetMusicSpeed = (1.0f + (elapsedSec / 150f)).coerceIn(1.0f, 1.35f)
+            if (kotlin.math.abs(targetMusicSpeed - lastMusicSpeed) > 0.01f) {
+                viewModel.setMusicSpeed(targetMusicSpeed)
+                lastMusicSpeed = targetMusicSpeed
+            }
 
             // Advance and expire effects.
             effects.removeAll { it.age >= 1f }
@@ -251,14 +309,15 @@ fun PlayScreen(
                 }
             }
 
-            // Spawn targets from edges after the first 5 s.
-            if (elapsedSec >= 5f) {
+            // Spawn targets from edges after the configured start delay.
+            if (elapsedSec >= startDelaySec) {
                 val desiredCount = (3 + (difficulty * 5).toInt()).coerceIn(3, 12)
                 if (targets.size < desiredCount) {
                     targets.add(
                         spawnFromEdge(
                             nextTargetId++, width, height,
-                            currentThemeColors, difficulty, fullEmojiMode, rng
+                            currentThemeColors, difficulty,
+                            currentEmojiPool, currentShapesAllowed, rng
                         )
                     )
                 }
@@ -424,6 +483,43 @@ fun PlayScreen(
                     drawRect(color = Color.Black.copy(alpha = 0.15f), size = size)
                 }
             }
+            // Subtle banner telling the parent (not the kid) that the guard
+            // has kicked in. Fades in at the top-right, out of the way of
+            // gameplay.
+            Text(
+                text = "● calming things down",
+                color = Color.White.copy(alpha = 0.65f),
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 40.dp, end = 16.dp),
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        offset = Offset(1f, 1f),
+                        blurRadius = 3f
+                    ),
+                    fontSize = 13.sp
+                )
+            )
+        } else if (settings.adaptivePlayEnabled && playState.stimulusLevel > 0.8f) {
+            // Adaptive engine is dialling things UP - equally subtle banner.
+            Text(
+                text = "● adapting",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 13.sp,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 40.dp, end = 16.dp),
+                style = TextStyle(
+                    shadow = Shadow(
+                        color = Color.Black.copy(alpha = 0.6f),
+                        offset = Offset(1f, 1f),
+                        blurRadius = 3f
+                    ),
+                    fontSize = 13.sp
+                )
+            )
         }
 
         // Back-press toast.
@@ -455,12 +551,106 @@ fun PlayScreen(
             }
         }
     }
+
+    if (showExitDialog) {
+        ExitScoreDialog(
+            score = score,
+            isHighScore = remember(score) { HighScoreStore.isHighScore(context, score) },
+            onSave = { name ->
+                HighScoreStore.save(context, name, score)
+                showExitDialog = false
+                onExit()
+            },
+            onSkip = {
+                showExitDialog = false
+                onExit()
+            }
+        )
+    }
+}
+
+// ── Exit / high score dialog ──────────────────────────────────────────────────
+
+/**
+ * Post-game dialog. If the score is a top-10 high score the user is offered a
+ * text field to enter their name (up to 20 characters); otherwise the dialog
+ * just shows the final score and offers to go back to the menu.
+ */
+@Composable
+private fun ExitScoreDialog(
+    score: Int,
+    isHighScore: Boolean,
+    onSave: (String) -> Unit,
+    onSkip: () -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onSkip,
+        title = {
+            androidx.compose.material3.Text(
+                text = if (isHighScore) "New High Score!" else "Great game!",
+                style = androidx.compose.material3.MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                androidx.compose.material3.Text(
+                    text = "You smashed ⭐ $score targets.",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodyLarge
+                )
+                if (isHighScore) {
+                    androidx.compose.foundation.layout.Spacer(
+                        androidx.compose.foundation.layout.Modifier.height(12.dp)
+                    )
+                    androidx.compose.material3.Text(
+                        text = "Enter a name to save to the leaderboard:",
+                        style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        androidx.compose.foundation.layout.Modifier.height(8.dp)
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = name,
+                        onValueChange = {
+                            if (it.length <= HighScoreStore.MAX_NAME_LENGTH) name = it
+                        },
+                        singleLine = true,
+                        placeholder = { androidx.compose.material3.Text("Your name") },
+                        modifier = androidx.compose.foundation.layout.Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (isHighScore) {
+                androidx.compose.material3.TextButton(
+                    enabled = name.isNotBlank(),
+                    onClick = { onSave(name.trim()) }
+                ) {
+                    androidx.compose.material3.Text("Save")
+                }
+            } else {
+                androidx.compose.material3.TextButton(onClick = onSkip) {
+                    androidx.compose.material3.Text("Back to menu")
+                }
+            }
+        },
+        dismissButton = if (isHighScore) {
+            {
+                androidx.compose.material3.TextButton(onClick = onSkip) {
+                    androidx.compose.material3.Text("Skip")
+                }
+            }
+        } else null
+    )
 }
 
 // ── Target spawning ───────────────────────────────────────────────────────────
 
 /**
  * Spawn a new target from a random screen edge, moving toward the interior.
+ * The [emojiPool] is sampled from when an emoji-typed target is picked, and
+ * [shapesAllowed] controls whether non-emoji geometric targets can also appear.
  */
 private fun spawnFromEdge(
     id: Long,
@@ -468,7 +658,8 @@ private fun spawnFromEdge(
     height: Float,
     colors: List<Color>,
     difficulty: Float,
-    fullEmojiMode: Boolean,
+    emojiPool: List<String>,
+    shapesAllowed: Boolean,
     rng: Random
 ): FloatingTarget {
     val radius = 32f + rng.nextFloat() * 28f
@@ -495,14 +686,19 @@ private fun spawnFromEdge(
     val angle = baseAngle + jitter
 
     val color = colors[rng.nextInt(colors.size)]
-    val emoji = EMOJI_POOL[rng.nextInt(EMOJI_POOL.size)]
+    val emoji = emojiPool[rng.nextInt(emojiPool.size)]
 
-    val kind = if (fullEmojiMode) {
-        TargetKind.EMOJI
+    // Kind selection:
+    //  - If the user enabled SHAPES, roughly 50/50 mix with emoji.
+    //  - Otherwise always emoji.
+    val kind = if (shapesAllowed && rng.nextFloat() < 0.5f) {
+        val geometric = arrayOf(
+            TargetKind.CIRCLE, TargetKind.STAR, TargetKind.SQUARE,
+            TargetKind.TRIANGLE, TargetKind.HEART, TargetKind.DIAMOND
+        )
+        geometric[rng.nextInt(geometric.size)]
     } else {
-        // Mix: roughly half emoji, half geometry.
-        val kinds = TargetKind.values()
-        kinds[rng.nextInt(kinds.size)]
+        TargetKind.EMOJI
     }
 
     return FloatingTarget(

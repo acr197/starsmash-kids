@@ -52,7 +52,11 @@ object SoundSynth {
         WATER_DROP,
         WOOD_TAP,
         GLASS_PING,
-        BREEZE
+        BREEZE,
+
+        // Very soft whispered taps for CALM-mode drags (rapid-fire).
+        HUSH_LOW,
+        HUSH_MID
     }
 
     /**
@@ -85,7 +89,9 @@ object SoundSynth {
      */
     fun generateMusicLoop(cacheDir: File, style: MusicStyle = MusicStyle.ARCADE): File {
         cacheDir.mkdirs()
-        val file = File(cacheDir, "ssk_music_${style.name.lowercase()}.wav")
+        // Bump v suffix whenever the waveform generator changes so old caches
+        // don't get reused with new code.
+        val file = File(cacheDir, "ssk_music_${style.name.lowercase()}_v2.wav")
         if (!file.exists() || file.length() < 1024) {
             val samples = when (style) {
                 MusicStyle.ARCADE -> renderMusicLoopArcade()
@@ -112,6 +118,31 @@ object SoundSynth {
         Clip.WOOD_TAP -> woodTap()
         Clip.GLASS_PING -> glassPing()
         Clip.BREEZE -> breeze()
+        Clip.HUSH_LOW -> hush(165f)
+        Clip.HUSH_MID -> hush(220f)
+    }
+
+    /**
+     * Very quiet, heavily-filtered, short "hush" tick - a low sine blip
+     * wrapped in a fast decaying envelope. Intended for CALM-mode drag
+     * trails where we want subtle breath-like feedback, not repeated taps.
+     * ~90 ms.
+     */
+    private fun hush(freq: Float): ShortArray {
+        val dur = 0.09f
+        val n = (SFX_SAMPLE_RATE * dur).toInt()
+        val buf = ShortArray(n)
+        val twoPi = (2f * PI).toFloat()
+        for (i in 0 until n) {
+            val t = i.toFloat() / SFX_SAMPLE_RATE
+            val attack = min(t / 0.008f, 1f)
+            val decay = exp(-24f * t)
+            val env = attack * decay
+            // Very low amp on purpose - this is meant to be barely there.
+            val s = sin(twoPi * freq * t) * 0.20f
+            buf[i] = toPcm(s * env)
+        }
+        return buf
     }
 
     // ── Individual sound designs ───────────────────────────────────────────
@@ -342,44 +373,101 @@ object SoundSynth {
     // ── Music loop ─────────────────────────────────────────────────────────
 
     /**
-     * ARCADE: upbeat pentatonic arpeggio in C major over a soft bass pulse.
-     * Inspired by the cheerful Super Mario / Kirby overworld themes -
-     * bouncy, happy, never harsh. ~11 s loop.
+     * ARCADE: upbeat I-vi-IV-V progression in C major with a bouncy melody,
+     * walking bass, and soft chord pad. Written to feel like classic NES /
+     * SNES overworld themes - cheerful, polyphonic, and loops cleanly.
+     * ~12 s loop @ ~130 BPM.
      */
     private fun renderMusicLoopArcade(): ShortArray {
         val sr = MUSIC_SAMPLE_RATE
-        // Pentatonic C major: C D E G A, across two octaves.
-        val arp = floatArrayOf(
-            261.63f, 329.63f, 392.00f, 440.00f,
-            523.25f, 440.00f, 392.00f, 329.63f
-        )
-        val bassNotes = floatArrayOf(130.81f, 196.00f) // C3, G3
-        val stepSec = 0.35f                              // ~170 BPM-ish
-        val totalSteps = arp.size * 4                   // 32 steps = ~11.2s
+        val stepSec = 0.23f // ~130 BPM sixteenth-ish
+        // 4 bars, 16 steps per bar = 64 steps ~= 14.7 s (we'll trim to 48 steps).
+        val totalSteps = 48
         val totalSamples = (sr * stepSec * totalSteps).toInt()
         val buf = FloatArray(totalSamples)
 
-        val twoPi = (2f * PI).toFloat()
+        // Chord progression: C - Am - F - G, 12 steps per chord.
+        // Each chord is 3 notes. Triads in root position.
+        val chordC = floatArrayOf(261.63f, 329.63f, 392.00f)       // C E G
+        val chordAm = floatArrayOf(220.00f, 261.63f, 329.63f)      // A C E
+        val chordF = floatArrayOf(174.61f, 220.00f, 261.63f)       // F A C
+        val chordG = floatArrayOf(196.00f, 246.94f, 293.66f)       // G B D
+        val chordProg = arrayOf(chordC, chordAm, chordF, chordG)
+        val bassProg = floatArrayOf(130.81f, 110.00f, 87.31f, 98.00f) // C2 A2 F2 G2
+
+        // Bouncy melody: a memorable 12-step motif repeated per chord, shifted
+        // so it follows each chord's root tone. (Intervals 0, 4, 7, 4, 12, 7, 4, 0, 2, 4, 7, 4).
+        val motifIntervals = intArrayOf(0, 4, 7, 4, 12, 7, 4, 0, 2, 4, 7, 4)
+        // Each step = quarter note (stepSec). Motif = 12 steps per chord.
+
         for (step in 0 until totalSteps) {
-            val note = arp[step % arp.size]
+            val chordIdx = (step / 12) % chordProg.size
+            val chord = chordProg[chordIdx]
+            val bassNote = bassProg[chordIdx]
             val startSample = (step * stepSec * sr).toInt()
-            val noteSamples = (stepSec * sr * 0.9f).toInt()
-            for (i in 0 until noteSamples) {
+            val noteLen = (stepSec * sr * 0.95f).toInt()
+
+            // --- Chord pad (softer sustain, sums all three notes) ---
+            // Play the chord only on the first step of each chord region so
+            // the pad holds through the chord.
+            if (step % 12 == 0) {
+                val padLen = (stepSec * sr * 12f).toInt()
+                for (i in 0 until padLen) {
+                    val t = i.toFloat() / sr
+                    val attack = min(t / 0.08f, 1f)
+                    val release = 1f - (t / (padLen.toFloat() / sr)).coerceIn(0f, 1f) * 0.3f
+                    val env = attack * release
+                    // Sum three sines, slightly detuned for chorus warmth.
+                    var s = 0f
+                    for (n in chord) {
+                        s += sin(2f * PI.toFloat() * n * t) * 0.09f
+                        s += sin(2f * PI.toFloat() * n * 1.003f * t) * 0.06f
+                    }
+                    val idx = startSample + i
+                    if (idx < totalSamples) buf[idx] += s * env
+                }
+            }
+
+            // --- Lead melody: bouncy motif ---
+            val stepInChord = step % 12
+            val interval = motifIntervals[stepInChord]
+            val leadFreq = chord[0] * 2f * 2f.pow(interval / 12f)
+            for (i in 0 until noteLen) {
                 val t = i.toFloat() / sr
-                val env = exp(-3.2f * t) * min(t / 0.02f, 1f)
-                val s = sin(twoPi * note * t) * 0.28f +
-                    sin(twoPi * note * 2f * t) * 0.06f
+                val attack = min(t / 0.008f, 1f)
+                val decay = exp(-4.5f * t)
+                val env = attack * decay
+                // Square-ish via 3 odd harmonics for that chiptune brightness.
+                val s = sin(2f * PI.toFloat() * leadFreq * t) * 0.22f +
+                    sin(2f * PI.toFloat() * leadFreq * 3f * t) * 0.06f +
+                    sin(2f * PI.toFloat() * leadFreq * 5f * t) * 0.02f
                 val idx = startSample + i
                 if (idx < totalSamples) buf[idx] += s * env
             }
-            // Bass pulse every two steps.
-            if (step % 2 == 0) {
-                val bass = bassNotes[(step / 2) % bassNotes.size]
-                val bassLen = (stepSec * sr * 1.9f).toInt()
-                for (i in 0 until bassLen) {
+
+            // --- Walking bass: root note on every step ---
+            // Alternate root and fifth for a walking feel.
+            val walkingFreq = if (step % 2 == 0) bassNote else bassNote * 1.5f
+            val bassLen = (stepSec * sr * 0.9f).toInt()
+            for (i in 0 until bassLen) {
+                val t = i.toFloat() / sr
+                val attack = min(t / 0.01f, 1f)
+                val decay = exp(-2.5f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * walkingFreq * t) * 0.30f +
+                    sin(2f * PI.toFloat() * walkingFreq * 2f * t) * 0.05f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+
+            // --- Counter-melody plink on off-beats (every 3rd step) ---
+            if (step % 3 == 1) {
+                val plinkFreq = chord[2] * 2f
+                val plinkLen = (stepSec * sr * 0.5f).toInt()
+                for (i in 0 until plinkLen) {
                     val t = i.toFloat() / sr
-                    val env = exp(-1.4f * t) * min(t / 0.02f, 1f)
-                    val s = sin(twoPi * bass * t) * 0.22f
+                    val env = exp(-10f * t) * min(t / 0.003f, 1f)
+                    val s = sin(2f * PI.toFloat() * plinkFreq * t) * 0.10f
                     val idx = startSample + i
                     if (idx < totalSamples) buf[idx] += s * env
                 }
@@ -389,43 +477,90 @@ object SoundSynth {
     }
 
     /**
-     * ADVENTURE: slower melodic loop in A minor with a longer held lead note
-     * and a walking bass. Inspired by the exploration themes of early
-     * Zelda / Kirby's Dream Land. ~12 s loop.
+     * ADVENTURE: major-key chord progression (I-V-vi-IV) in D major with
+     * a bright singable melody, third harmony line above, and walking bass.
+     * Medium-tempo, uplifting, Banjo-Kazooie / Kirby vibe. ~12 s loop.
      */
     private fun renderMusicLoopAdventure(): ShortArray {
         val sr = MUSIC_SAMPLE_RATE
-        // A minor melody (A4 C5 E5 D5 C5 E5 D5 B4)
-        val melody = floatArrayOf(
-            440.00f, 523.25f, 659.25f, 587.33f,
-            523.25f, 659.25f, 587.33f, 493.88f
-        )
-        val bass = floatArrayOf(110.00f, 146.83f, 164.81f, 146.83f) // A2 D3 E3 D3
-        val stepSec = 0.42f
-        val totalSteps = melody.size * 4
+        val stepSec = 0.25f // 120 BPM
+        val totalSteps = 48
         val totalSamples = (sr * stepSec * totalSteps).toInt()
         val buf = FloatArray(totalSamples)
-        val twoPi = (2f * PI).toFloat()
+
+        // D major I-V-vi-IV: D - A - Bm - G
+        val chordD = floatArrayOf(293.66f, 369.99f, 440.00f)       // D F# A
+        val chordA = floatArrayOf(220.00f, 277.18f, 329.63f)       // A C# E
+        val chordBm = floatArrayOf(246.94f, 293.66f, 369.99f)      // B D F#
+        val chordG = floatArrayOf(196.00f, 246.94f, 293.66f)       // G B D
+        val chordProg = arrayOf(chordD, chordA, chordBm, chordG)
+        val bassProg = floatArrayOf(73.42f, 110.00f, 123.47f, 98.00f) // D2 A2 B2 G2
+
+        // Singable 12-step melody (intervals over chord root in semitones).
+        // Think of it as "da-da da-dum, da-da da-dum, soaring up".
+        val motifIntervals = intArrayOf(12, 12, 16, 14, 12, 16, 19, 16, 14, 12, 14, 12)
 
         for (step in 0 until totalSteps) {
-            val note = melody[step % melody.size]
+            val chordIdx = (step / 12) % chordProg.size
+            val chord = chordProg[chordIdx]
+            val bassNote = bassProg[chordIdx]
             val startSample = (step * stepSec * sr).toInt()
-            val noteLen = (stepSec * sr * 0.85f).toInt()
+            val noteLen = (stepSec * sr * 0.95f).toInt()
+
+            // --- Chord pad held through the whole chord region ---
+            if (step % 12 == 0) {
+                val padLen = (stepSec * sr * 12f).toInt()
+                for (i in 0 until padLen) {
+                    val t = i.toFloat() / sr
+                    val attack = min(t / 0.15f, 1f)
+                    val release = 1f - (t / (padLen.toFloat() / sr)).coerceIn(0f, 1f) * 0.25f
+                    val env = attack * release
+                    var s = 0f
+                    for (n in chord) {
+                        s += sin(2f * PI.toFloat() * n * t) * 0.10f
+                        s += sin(2f * PI.toFloat() * n * 1.005f * t) * 0.06f
+                    }
+                    val idx = startSample + i
+                    if (idx < totalSamples) buf[idx] += s * env
+                }
+            }
+
+            // --- Lead melody ---
+            val stepInChord = step % 12
+            val interval = motifIntervals[stepInChord]
+            val leadFreq = chord[0] * 2f.pow(interval / 12f)
             for (i in 0 until noteLen) {
                 val t = i.toFloat() / sr
-                // Slower decay for a sustained feel.
-                val env = exp(-1.8f * t) * min(t / 0.025f, 1f)
-                val s = sin(twoPi * note * t) * 0.26f +
-                    sin(twoPi * note * 2f * t) * 0.05f
+                val attack = min(t / 0.015f, 1f)
+                val decay = exp(-2.2f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * leadFreq * t) * 0.24f +
+                    sin(2f * PI.toFloat() * leadFreq * 2f * t) * 0.06f
                 val idx = startSample + i
                 if (idx < totalSamples) buf[idx] += s * env
             }
-            val bassNote = bass[(step / 2) % bass.size]
-            val bassLen = (stepSec * sr * 1.8f).toInt()
+
+            // --- Harmony line: a third (4 semitones) above the lead ---
+            val harmonyFreq = leadFreq * 2f.pow(4f / 12f)
+            for (i in 0 until noteLen) {
+                val t = i.toFloat() / sr
+                val attack = min(t / 0.02f, 1f)
+                val decay = exp(-2.5f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * harmonyFreq * t) * 0.12f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+
+            // --- Walking bass: root on 1/3, fifth on 2/4 ---
+            val walkingFreq = if (step % 2 == 0) bassNote else bassNote * 1.5f
+            val bassLen = (stepSec * sr * 0.9f).toInt()
             for (i in 0 until bassLen) {
                 val t = i.toFloat() / sr
-                val env = exp(-1.0f * t) * min(t / 0.03f, 1f)
-                val s = sin(twoPi * bassNote * t) * 0.20f
+                val attack = min(t / 0.01f, 1f)
+                val decay = exp(-2.0f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * walkingFreq * t) * 0.32f
                 val idx = startSample + i
                 if (idx < totalSamples) buf[idx] += s * env
             }
@@ -434,50 +569,101 @@ object SoundSynth {
     }
 
     /**
-     * BUBBLE_POP: gentle G major ostinato over a soft pad, with every other
-     * note an octave up - feels like a Kirby / Animal Crossing cosy tune.
-     * ~11 s loop.
+     * BUBBLE_POP: fast happy I-V-vi-IV in G major with a bouncy sixteenth-note
+     * arpeggio, sparkly plinks on off-beats, chord pad, and walking bass.
+     * Dense and poppy - Bloons / Kirby vibe. ~12 s loop @ ~140 BPM.
      */
     private fun renderMusicLoopBubblePop(): ShortArray {
         val sr = MUSIC_SAMPLE_RATE
-        // G major pentatonic: G A B D E, with octave jumps
-        val lead = floatArrayOf(
-            392.00f, 783.99f, 440.00f, 493.88f,
-            587.33f, 659.25f, 783.99f, 587.33f
-        )
-        val pad = floatArrayOf(196.00f, 246.94f, 293.66f) // G3 B3 D4
-        val stepSec = 0.32f
-        val totalSteps = lead.size * 4
+        val stepSec = 0.21f // ~140 BPM sixteenths
+        val totalSteps = 56
         val totalSamples = (sr * stepSec * totalSteps).toInt()
         val buf = FloatArray(totalSamples)
-        val twoPi = (2f * PI).toFloat()
+
+        // G major I-V-vi-IV: G - D - Em - C
+        val chordG = floatArrayOf(196.00f, 246.94f, 293.66f)       // G B D
+        val chordD = floatArrayOf(146.83f, 185.00f, 220.00f)       // D F# A
+        val chordEm = floatArrayOf(164.81f, 196.00f, 246.94f)      // E G B
+        val chordC = floatArrayOf(130.81f, 164.81f, 196.00f)       // C E G
+        val chordProg = arrayOf(chordG, chordD, chordEm, chordC)
+        val bassProg = floatArrayOf(98.00f, 73.42f, 82.41f, 65.41f) // G2 D2 E2 C2
+
+        // 14 steps per chord. Arpeggio walks up and bounces back.
+        // Pattern in chord-tone indices: 0,1,2,1,0,2,1,2 then repeats with twist.
+        val arpPattern = intArrayOf(0, 1, 2, 1, 3, 2, 1, 0, 2, 1, 3, 2, 1, 0)
 
         for (step in 0 until totalSteps) {
-            val note = lead[step % lead.size]
+            val chordIdx = (step / 14) % chordProg.size
+            val chord = chordProg[chordIdx]
+            val bassNote = bassProg[chordIdx]
             val startSample = (step * stepSec * sr).toInt()
             val noteLen = (stepSec * sr * 0.9f).toInt()
+
+            // Chord pad.
+            if (step % 14 == 0) {
+                val padLen = (stepSec * sr * 14f).toInt()
+                for (i in 0 until padLen) {
+                    val t = i.toFloat() / sr
+                    val attack = min(t / 0.06f, 1f)
+                    val release = 1f - (t / (padLen.toFloat() / sr)).coerceIn(0f, 1f) * 0.3f
+                    val env = attack * release
+                    var s = 0f
+                    for (n in chord) {
+                        s += sin(2f * PI.toFloat() * n * 2f * t) * 0.08f
+                    }
+                    val idx = startSample + i
+                    if (idx < totalSamples) buf[idx] += s * env
+                }
+            }
+
+            // Arpeggio lead.
+            val stepInChord = step % 14
+            val tone = arpPattern[stepInChord]
+            // tone 0,1,2 = chord tones; 3 = octave of root
+            val arpFreq = when (tone) {
+                3 -> chord[0] * 4f
+                else -> chord[tone] * 2f
+            }
             for (i in 0 until noteLen) {
                 val t = i.toFloat() / sr
-                val env = exp(-4.5f * t) * min(t / 0.01f, 1f)
-                // Triangle-ish by stacking odd harmonics
-                val s = sin(twoPi * note * t) * 0.28f +
-                    sin(twoPi * note * 3f * t) * 0.04f
+                val attack = min(t / 0.006f, 1f)
+                val decay = exp(-6.5f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * arpFreq * t) * 0.22f +
+                    sin(2f * PI.toFloat() * arpFreq * 2f * t) * 0.05f
                 val idx = startSample + i
                 if (idx < totalSamples) buf[idx] += s * env
             }
-        }
-        // Slow sustained pad underneath, cycling every 4 steps.
-        val padStepSamples = (stepSec * 4f * sr).toInt()
-        for (seg in 0 until (totalSamples / padStepSamples + 1)) {
-            val padNote = pad[seg % pad.size]
-            val padStart = seg * padStepSamples
-            val padLen = (padStepSamples * 1.2f).toInt()
-            for (i in 0 until padLen) {
+
+            // Walking bass: root - fifth alternation, syncopated.
+            val walkingFreq = when (step % 4) {
+                0 -> bassNote
+                1 -> bassNote * 1.5f
+                2 -> bassNote
+                else -> bassNote * 2f
+            }
+            val bassLen = (stepSec * sr * 0.85f).toInt()
+            for (i in 0 until bassLen) {
                 val t = i.toFloat() / sr
-                val env = min(t / 0.4f, 1f) * (1f - min(t / (padLen.toFloat() / sr), 1f) * 0.4f)
-                val s = sin(twoPi * padNote * t) * 0.12f
-                val idx = padStart + i
-                if (idx in 0 until totalSamples) buf[idx] += s * env
+                val attack = min(t / 0.008f, 1f)
+                val decay = exp(-3f * t)
+                val env = attack * decay
+                val s = sin(2f * PI.toFloat() * walkingFreq * t) * 0.28f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+
+            // Sparkle plink on step 7 of each chord.
+            if (step % 14 == 7) {
+                val plinkFreq = chord[2] * 4f
+                val plinkLen = (stepSec * sr * 1.2f).toInt()
+                for (i in 0 until plinkLen) {
+                    val t = i.toFloat() / sr
+                    val env = exp(-8f * t) * min(t / 0.003f, 1f)
+                    val s = sin(2f * PI.toFloat() * plinkFreq * t) * 0.08f
+                    val idx = startSample + i
+                    if (idx < totalSamples) buf[idx] += s * env
+                }
             }
         }
         return normaliseAndQuantise(buf, totalSamples)
