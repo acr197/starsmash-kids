@@ -43,7 +43,7 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
 
     private val adaptiveEngine = AdaptivePlayEngine()
     private val overstimGuard = OverstimulationGuard()
-    val audioEngine = AudioEngine()
+    val audioEngine = AudioEngine(application.applicationContext)
 
     init {
         val settings = AppSettings.load(application)
@@ -54,11 +54,25 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
         audioEngine.soundEnabled = settings.soundEnabled
         audioEngine.setSoundMode(settings.soundMode)
 
-        try {
-            audioEngine.start()
-        } catch (_: Exception) {
-            // Audio is non-critical; silently degrade if initialization fails.
+        // AudioEngine.start() does file I/O (synthesising WAVs into cacheDir
+        // on first launch) so push it onto a background dispatcher. All
+        // subsequent play() calls are safe to fire before loading completes –
+        // they just no-op until SoundPool finishes loading.
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                audioEngine.start()
+            } catch (_: Exception) {
+                // Audio is non-critical; silently degrade if init fails.
+            }
         }
+    }
+
+    /**
+     * Called by PlayScreen when a floating target is successfully smashed.
+     * Plays the coin / chime reward sound.
+     */
+    fun onTargetHit() {
+        audioEngine.playTargetHit()
     }
 
     /**

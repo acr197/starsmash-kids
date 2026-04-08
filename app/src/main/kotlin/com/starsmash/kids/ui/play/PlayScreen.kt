@@ -2,7 +2,6 @@ package com.starsmash.kids.ui.play
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -17,34 +16,29 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.starsmash.kids.settings.EffectsIntensity
 import com.starsmash.kids.settings.PlayTheme
 import com.starsmash.kids.touch.TouchEventType
-import com.starsmash.kids.ui.theme.OceanTheme
-import com.starsmash.kids.ui.theme.RainbowTheme
-import com.starsmash.kids.ui.theme.ShapesTheme
-import com.starsmash.kids.ui.theme.SpaceTheme
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.sin
+import kotlin.math.*
 import kotlin.random.Random
 
-// ── Effect model ─────────────────────────────────────────────────────────────
+// ── Effect model ──────────────────────────────────────────────────────────────
 
-private enum class EffectType {
-    STAR_BURST, SPARKLE, RAINBOW_TRAIL, CONFETTI, RIPPLE_WAVE, BUBBLE
-}
+private enum class EffectType { STAR_BURST, SPARKLE, RAINBOW_TRAIL, CONFETTI, RIPPLE_WAVE, BUBBLE }
 
 private data class Effect(
     val x: Float,
@@ -59,9 +53,9 @@ private data class Effect(
     val angle: Float = 0f
 )
 
-// ── Floating target model ────────────────────────────────────────────────────
+// ── Floating target model ─────────────────────────────────────────────────────
 
-private enum class TargetShape { STAR, CIRCLE, SQUARE, TRIANGLE, HEART, DIAMOND }
+private enum class TargetKind { EMOJI, CIRCLE, STAR, SQUARE, TRIANGLE, HEART, DIAMOND }
 
 private data class FloatingTarget(
     val id: Long,
@@ -71,9 +65,18 @@ private data class FloatingTarget(
     var vy: Float,
     val radius: Float,
     val color: Color,
-    val shape: TargetShape,
+    val kind: TargetKind,
+    val emoji: String,
     var spin: Float,
-    val spinSpeed: Float
+    val spinSpeed: Float,
+    var dirChangeTimer: Float
+)
+
+// Kid-friendly emoji pool
+private val EMOJI_POOL = listOf(
+    "🚒", "🚚", "🚜", "🦖", "🐶", "🐱", "🐘", "🐵", "🐻", "🧸",
+    "🎈", "⭐", "🚀", "🦄", "🦁", "🐙", "🐬", "🏆", "🎂", "🌟",
+    "💫", "🎀", "🎠", "🌈"
 )
 
 // ── PlayScreen ────────────────────────────────────────────────────────────────
@@ -81,13 +84,11 @@ private data class FloatingTarget(
 /**
  * Fullscreen child-facing play canvas.
  *
- * Any touch (tap, drag, multi-finger, palm) spawns visual effects and plays a
- * sound. Floating shapes drift across the screen; tapping one produces a
- * larger reactive burst. Session difficulty (target speed and count) ramps up
- * the longer the session lasts.
+ * Floating targets drift in from screen edges after 5 s. Tapping them bursts
+ * them and increments a score counter. Background animates with the current
+ * theme. Difficulty ramps over time: targets speed up and their count grows.
  *
- * Back-press handling requires three presses. The first and second presses
- * show a small semi-transparent toast at the top which auto-dismisses.
+ * Back-press handling requires three presses, with a toast notification.
  */
 @Composable
 fun PlayScreen(
@@ -95,24 +96,19 @@ fun PlayScreen(
     viewModel: PlayViewModel = viewModel()
 ) {
     val playState by viewModel.playState.collectAsStateWithLifecycle()
-    val settings = playState.settings
 
     LaunchedEffect(Unit) { viewModel.reloadSettings() }
 
-    var screenSize by remember { mutableStateOf(IntSize.Zero) }
+    val settings = playState.settings
 
-    // Effects list + floating targets list. Both mutated from the animation
-    // loop and the pointerInput handler; SnapshotStateLists are thread-safe
-    // enough for the single-threaded Compose UI model.
+    var screenSize by remember { mutableStateOf(IntSize.Zero) }
     val effects = remember { mutableStateListOf<Effect>() }
     val targets = remember { mutableStateListOf<FloatingTarget>() }
-
-    // Session start time drives difficulty escalation.
-    val sessionStart = remember { System.currentTimeMillis() }
-
-    // Back-press state: need 3 presses to exit. Toast shown between presses.
+    var score by remember { mutableIntStateOf(0) }
     var backPressCount by remember { mutableIntStateOf(0) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
+    val sessionStart = remember { System.currentTimeMillis() }
+    var bgPhase by remember { mutableFloatStateOf(0f) }
 
     BackHandler {
         backPressCount += 1
@@ -123,7 +119,7 @@ fun PlayScreen(
         }
     }
 
-    // Auto-dismiss toast and reset counter after inactivity.
+    // Auto-dismiss toast after 2.5 s and reset back-press counter.
     LaunchedEffect(backPressCount, toastMessage) {
         if (toastMessage != null) {
             kotlinx.coroutines.delay(2500L)
@@ -132,19 +128,15 @@ fun PlayScreen(
         }
     }
 
-    val backgroundColor = remember(settings.playTheme) { themeBackground(settings.playTheme) }
     val themeColors = remember(settings.playTheme) { themeColorPalette(settings.playTheme) }
-
-    // rememberUpdatedState so the long-lived pointerInput lambda always reads
-    // the latest values without being torn down and re-launched.
     val currentThemeColors by rememberUpdatedState(themeColors)
     val currentReducedMotion by rememberUpdatedState(settings.reducedMotion)
 
     val baseScale = remember(settings.effectsIntensity, playState.stimulusLevel, playState.isGuardActive) {
         val intensityMult = when (settings.effectsIntensity) {
-            com.starsmash.kids.settings.EffectsIntensity.LOW -> 0.6f
-            com.starsmash.kids.settings.EffectsIntensity.MEDIUM -> 1.0f
-            com.starsmash.kids.settings.EffectsIntensity.HIGH -> 1.5f
+            EffectsIntensity.LOW -> 0.6f
+            EffectsIntensity.MEDIUM -> 1.0f
+            EffectsIntensity.HIGH -> 1.5f
         }
         val adaptiveMult = if (settings.adaptivePlayEnabled) {
             0.6f + playState.stimulusLevel * 0.8f
@@ -154,8 +146,21 @@ fun PlayScreen(
     }
     val currentBaseScale by rememberUpdatedState(baseScale)
 
-    // Animation loop: advance effect ages, move floating targets, spawn new
-    // ones as needed. Difficulty scales with elapsed session time.
+    val vibrancy = when (settings.effectsIntensity) {
+        EffectsIntensity.LOW -> 0.85f
+        EffectsIntensity.MEDIUM -> 1.0f
+        EffectsIntensity.HIGH -> 1.15f
+    }
+
+    val phaseSpeed = when (settings.effectsIntensity) {
+        EffectsIntensity.LOW -> 0.004f
+        EffectsIntensity.MEDIUM -> 0.007f
+        EffectsIntensity.HIGH -> 0.012f
+    }
+
+    val fullEmojiMode = settings.fullEmojiMode
+
+    // Animation loop: advances effect ages, moves targets, spawns new ones.
     LaunchedEffect(screenSize) {
         if (screenSize == IntSize.Zero) return@LaunchedEffect
         val width = screenSize.width.toFloat()
@@ -165,22 +170,21 @@ fun PlayScreen(
         var lastFrameTime = withFrameMillis { it }
         var nextTargetId = 0L
 
-        // Seed initial targets so the screen isn't empty on entry.
-        repeat(4) {
-            targets.add(spawnTarget(nextTargetId++, width, height, currentThemeColors, 1f, rng))
-        }
-
         while (true) {
             val currentFrameTime = withFrameMillis { it }
             val dt = (currentFrameTime - lastFrameTime).coerceIn(0L, 100L)
             lastFrameTime = currentFrameTime
             val deltaMs = if (dt > 0) dt.toFloat() else 16f
 
-            // Difficulty curve: 0 at 0s, 1 around 60s, clamped to ~1.6.
             val elapsedSec = (currentFrameTime - sessionStart) / 1000f
             val difficulty = (0.4f + elapsedSec / 60f).coerceAtMost(1.6f)
 
-            // Advance effect ages.
+            // Advance background phase.
+            if (!settings.reducedMotion) {
+                bgPhase = (bgPhase + phaseSpeed * (deltaMs / 1000f) * difficulty) % 1f
+            }
+
+            // Advance and expire effects.
             effects.removeAll { it.age >= 1f }
             val esize = effects.size
             for (i in 0 until esize) {
@@ -189,51 +193,73 @@ fun PlayScreen(
                 effects[i] = e.copy(age = (e.age + deltaMs / e.maxAge).coerceAtMost(1f))
             }
 
-            // Move floating targets, wrap around screen edges.
-            val speedMul = 0.06f * difficulty
+            // Move floating targets.
+            val speedMul = 0.05f * difficulty
             val tsize = targets.size
             for (i in 0 until tsize) {
                 if (i >= targets.size) break
                 val t = targets[i]
                 var nx = t.x + t.vx * deltaMs * speedMul
                 var ny = t.y + t.vy * deltaMs * speedMul
-                val margin = t.radius + 20f
-                if (nx < -margin) nx = width + margin
-                if (nx > width + margin) nx = -margin
-                if (ny < -margin) ny = height + margin
-                if (ny > height + margin) ny = -margin
-                t.x = nx
-                t.y = ny
                 t.spin += t.spinSpeed * deltaMs * 0.001f
+
+                // After 60 s, targets occasionally change direction.
+                if (elapsedSec > 60f) {
+                    t.dirChangeTimer -= deltaMs
+                    if (t.dirChangeTimer <= 0f) {
+                        val speed = hypot(t.vx.toDouble(), t.vy.toDouble()).toFloat()
+                        val newAngle = rng.nextFloat() * 2f * PI.toFloat()
+                        t.vx = cos(newAngle) * speed
+                        t.vy = sin(newAngle) * speed
+                        t.dirChangeTimer = rng.nextFloat() * 4000f + 2000f
+                    }
+                }
+
+                // Remove target if it fully exits the screen.
+                if (nx < -t.radius * 3f || nx > width + t.radius * 3f ||
+                    ny < -t.radius * 3f || ny > height + t.radius * 3f
+                ) {
+                    targets.removeAt(i)
+                    // After removal indices shift; the outer loop will handle it
+                    // safely because we guard with `if (i >= targets.size) break`.
+                    break
+                } else {
+                    t.x = nx
+                    t.y = ny
+                }
             }
 
-            // Maintain a target count that grows with difficulty.
-            val desiredCount = (4 + (difficulty * 6).toInt()).coerceIn(4, 14)
-            while (targets.size < desiredCount) {
-                targets.add(spawnTarget(nextTargetId++, width, height, currentThemeColors, difficulty, rng))
+            // Spawn targets from edges after the first 5 s.
+            if (elapsedSec >= 5f) {
+                val desiredCount = (3 + (difficulty * 5).toInt()).coerceIn(3, 12)
+                if (targets.size < desiredCount) {
+                    targets.add(
+                        spawnFromEdge(
+                            nextTargetId++, width, height,
+                            currentThemeColors, difficulty, fullEmojiMode, rng
+                        )
+                    )
+                }
             }
+
+            // Cap total effects.
+            while (effects.size > 250) effects.removeAt(0)
         }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundColor)
             .onGloballyPositioned { coords -> screenSize = coords.size }
             .pointerInput(Unit) {
-                // Per-pointer last-known position for drag-trail spawning.
                 val lastPositions = mutableMapOf<Long, Offset>()
-
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
                         val changes = event.changes
                         val activeCount = changes.count { it.pressed }
-
-                        // Determine which pointers just went down, which are
-                        // moving, and which just lifted. Spawn appropriate
-                        // effects and audio events for each.
                         var anyNewPress = false
+
                         changes.forEach { change ->
                             val id = change.id.value
                             val pos = change.position
@@ -241,24 +267,26 @@ fun PlayScreen(
                             val nowPressed = change.pressed
 
                             if (nowPressed && !wasPressed) {
-                                // New touch down.
                                 anyNewPress = true
                                 lastPositions[id] = pos
 
-                                // Check if it landed on a floating target.
                                 val hitIdx = targets.indexOfLast { t ->
                                     hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
-                                        .toFloat() <= t.radius + 18f
+                                        .toFloat() <= t.radius + 20f
                                 }
                                 if (hitIdx >= 0) {
                                     val hit = targets.removeAt(hitIdx)
-                                    spawnTargetBurst(effects, hit, currentThemeColors, currentBaseScale, currentReducedMotion)
-                                    viewModel.onTouchEvent(
-                                        TouchEventType.RapidTapCluster(pos.x, pos.y, 2),
-                                        activeCount
+                                    score++
+                                    spawnTargetBurst(
+                                        effects, hit,
+                                        currentThemeColors, currentBaseScale, currentReducedMotion
                                     )
+                                    viewModel.onTargetHit()
                                 } else {
-                                    spawnTapBurst(effects, pos.x, pos.y, currentThemeColors, currentBaseScale, currentReducedMotion)
+                                    spawnTapBurst(
+                                        effects, pos.x, pos.y,
+                                        currentThemeColors, currentBaseScale, currentReducedMotion
+                                    )
                                     val evtType = when {
                                         activeCount >= 4 -> TouchEventType.PalmLikeBurst(pos.x, pos.y)
                                         activeCount >= 3 -> TouchEventType.MultiTouchBurst(pos.x, pos.y, activeCount)
@@ -267,8 +295,8 @@ fun PlayScreen(
                                     }
                                     viewModel.onTouchEvent(evtType, activeCount)
                                 }
+
                             } else if (nowPressed && wasPressed) {
-                                // Movement – spawn a trail if we moved enough.
                                 val last = lastPositions[id]
                                 if (last != null) {
                                     val dist = hypot(
@@ -277,7 +305,10 @@ fun PlayScreen(
                                     ).toFloat()
                                     if (dist > 18f) {
                                         lastPositions[id] = pos
-                                        spawnTrail(effects, pos.x, pos.y, currentThemeColors, currentBaseScale)
+                                        spawnTrail(
+                                            effects, pos.x, pos.y,
+                                            currentThemeColors, currentBaseScale
+                                        )
                                         viewModel.onTouchEvent(
                                             TouchEventType.SingleDrag(pos.x, pos.y),
                                             activeCount
@@ -285,17 +316,20 @@ fun PlayScreen(
                                         // Opportunistic target hit-check on drag.
                                         val hitIdx = targets.indexOfLast { t ->
                                             hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
-                                                .toFloat() <= t.radius + 12f
+                                                .toFloat() <= t.radius + 20f
                                         }
                                         if (hitIdx >= 0) {
                                             val hit = targets.removeAt(hitIdx)
+                                            score++
                                             spawnTargetBurst(
-                                                effects, hit, currentThemeColors, currentBaseScale,
-                                                currentReducedMotion
+                                                effects, hit,
+                                                currentThemeColors, currentBaseScale, currentReducedMotion
                                             )
+                                            viewModel.onTargetHit()
                                         }
                                     }
                                 }
+
                             } else if (!nowPressed && wasPressed) {
                                 lastPositions.remove(id)
                             }
@@ -303,35 +337,66 @@ fun PlayScreen(
                             change.consume()
                         }
 
-                        // Extra sparkle when several fingers press simultaneously.
+                        // Extra ripple when 3+ fingers press simultaneously.
                         if (anyNewPress && activeCount >= 3) {
                             val cx = changes.filter { it.pressed }.map { it.position.x }.average().toFloat()
                             val cy = changes.filter { it.pressed }.map { it.position.y }.average().toFloat()
                             spawnRipple(effects, cx, cy, currentThemeColors, currentBaseScale)
                         }
-
-                        // Cap total effects.
-                        while (effects.size > 250) effects.removeAt(0)
                     }
                 }
             }
     ) {
+        // Score display — always on top.
+        Text(
+            text = "⭐ $score",
+            color = Color.White.copy(alpha = 0.85f),
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 36.dp),
+            style = TextStyle(
+                shadow = Shadow(
+                    color = Color.Black.copy(alpha = 0.5f),
+                    offset = Offset(2f, 2f),
+                    blurRadius = 4f
+                ),
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold
+            )
+        )
+
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // Draw floating targets first so effects sit on top.
-            targets.forEach { drawTarget(it) }
+            with(ThemeBackground) {
+                drawThemeBackground(
+                    theme = settings.playTheme,
+                    phase = bgPhase,
+                    elapsedSec = ((System.currentTimeMillis() - sessionStart) / 1000f),
+                    reducedMotion = settings.reducedMotion,
+                    vibrancy = vibrancy
+                )
+            }
+            targets.forEach { drawFloatingTarget(it) }
             effects.forEach { drawEffect(it, settings.reducedMotion) }
         }
 
-        // Guard overlay (subtle dimming).
+        // Guard overlay — subtle dimming.
         if (playState.isGuardActive) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.15f))
-            )
+                    .then(
+                        Modifier.pointerInput(Unit) {} // absorb touches silently
+                    )
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    drawRect(color = Color.Black.copy(alpha = 0.15f), size = size)
+                }
+            }
         }
 
-        // Top toast for back-press warning. Non-blocking: doesn't cover play area.
+        // Back-press toast.
         val msg = toastMessage
         if (msg != null) {
             Box(
@@ -339,47 +404,94 @@ fun PlayScreen(
                     .align(Alignment.TopCenter)
                     .padding(top = 32.dp, start = 32.dp, end = 32.dp)
                     .clip(RoundedCornerShape(20.dp))
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .padding(horizontal = 18.dp, vertical = 10.dp)
+                    .then(
+                        Modifier.padding(horizontal = 18.dp, vertical = 10.dp)
+                    )
             ) {
                 Text(
                     text = msg,
                     color = Color.White.copy(alpha = 0.95f),
                     fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    style = TextStyle(
+                        shadow = Shadow(
+                            color = Color.Black.copy(alpha = 0.7f),
+                            offset = Offset(1f, 1f),
+                            blurRadius = 6f
+                        ),
+                        fontSize = 15.sp
+                    )
                 )
             }
         }
     }
 }
 
-// ── Target spawning and hit effects ──────────────────────────────────────────
+// ── Target spawning ───────────────────────────────────────────────────────────
 
-private fun spawnTarget(
+/**
+ * Spawn a new target from a random screen edge, moving toward the interior.
+ */
+private fun spawnFromEdge(
     id: Long,
     width: Float,
     height: Float,
     colors: List<Color>,
     difficulty: Float,
+    fullEmojiMode: Boolean,
     rng: Random
 ): FloatingTarget {
     val radius = 32f + rng.nextFloat() * 28f
-    val baseSpeed = 0.8f + rng.nextFloat() * 1.6f
-    val speed = baseSpeed * (0.8f + difficulty * 0.8f)
-    val angle = rng.nextFloat() * 2f * PI.toFloat()
+    val baseSpeed = 0.8f + rng.nextFloat() * 1.4f
+    val speed = baseSpeed * difficulty.coerceAtLeast(0.5f)
+
+    // Pick a random edge: 0=left, 1=right, 2=top, 3=bottom.
+    val edge = rng.nextInt(4)
+    val (startX, startY) = when (edge) {
+        0 -> Pair(-radius * 2f, rng.nextFloat() * height)
+        1 -> Pair(width + radius * 2f, rng.nextFloat() * height)
+        2 -> Pair(rng.nextFloat() * width, -radius * 2f)
+        else -> Pair(rng.nextFloat() * width, height + radius * 2f)
+    }
+
+    // Inward angle toward the opposite half of the screen, with ±30° jitter.
+    val baseAngle = when (edge) {
+        0 -> 0f                         // left edge → moving right
+        1 -> PI.toFloat()               // right edge → moving left
+        2 -> PI.toFloat() / 2f          // top edge → moving down
+        else -> -PI.toFloat() / 2f      // bottom edge → moving up
+    }
+    val jitter = (rng.nextFloat() - 0.5f) * (PI.toFloat() / 3f) // ±30°
+    val angle = baseAngle + jitter
+
+    val color = colors[rng.nextInt(colors.size)]
+    val emoji = EMOJI_POOL[rng.nextInt(EMOJI_POOL.size)]
+
+    val kind = if (fullEmojiMode) {
+        TargetKind.EMOJI
+    } else {
+        // Mix: roughly half emoji, half geometry.
+        val kinds = TargetKind.values()
+        kinds[rng.nextInt(kinds.size)]
+    }
+
     return FloatingTarget(
         id = id,
-        x = rng.nextFloat() * width,
-        y = rng.nextFloat() * height,
+        x = startX,
+        y = startY,
         vx = cos(angle) * speed,
         vy = sin(angle) * speed,
         radius = radius,
-        color = colors[rng.nextInt(colors.size)],
-        shape = TargetShape.values()[rng.nextInt(TargetShape.values().size)],
+        color = color,
+        kind = kind,
+        emoji = emoji,
         spin = rng.nextFloat() * 2f * PI.toFloat(),
-        spinSpeed = (rng.nextFloat() - 0.5f) * 2f
+        spinSpeed = (rng.nextFloat() - 0.5f) * 2f,
+        dirChangeTimer = rng.nextFloat() * 4000f + 2000f
     )
 }
+
+// ── Effect spawning ───────────────────────────────────────────────────────────
 
 private fun spawnTapBurst(
     effects: MutableList<Effect>,
@@ -515,14 +627,44 @@ private fun spawnTargetBurst(
             scale = baseScale * 1.5f
         )
     )
+    // Extra star-burst spokes for big hit feedback.
+    if (!reducedMotion) {
+        repeat(8) { i ->
+            val angle = (i.toFloat() / 8f) * 2f * PI.toFloat()
+            effects.add(
+                Effect(
+                    x = hit.x, y = hit.y,
+                    age = 0f, maxAge = 800f,
+                    color = hit.color,
+                    type = EffectType.STAR_BURST,
+                    scale = baseScale * 1.5f,
+                    velocityX = cos(angle) * 6f,
+                    velocityY = sin(angle) * 6f,
+                    angle = angle
+                )
+            )
+        }
+    }
 }
 
-// ── Draw ─────────────────────────────────────────────────────────────────────
+// ── DrawScope extensions ──────────────────────────────────────────────────────
 
-private fun DrawScope.drawTarget(t: FloatingTarget) {
+private fun DrawScope.drawFloatingTarget(t: FloatingTarget) {
     val c = t.color
-    when (t.shape) {
-        TargetShape.CIRCLE -> {
+    if (t.kind == TargetKind.EMOJI) {
+        drawIntoCanvas { canvas ->
+            val paint = android.graphics.Paint().apply {
+                textSize = t.radius * 2.2f
+                textAlign = android.graphics.Paint.Align.CENTER
+                isAntiAlias = true
+            }
+            canvas.nativeCanvas.drawText(t.emoji, t.x, t.y + t.radius * 0.75f, paint)
+        }
+        return
+    }
+
+    when (t.kind) {
+        TargetKind.CIRCLE -> {
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(c, c.copy(alpha = 0.4f)),
@@ -532,13 +674,14 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
                 radius = t.radius,
                 center = Offset(t.x, t.y)
             )
+            // Specular highlight.
             drawCircle(
                 color = Color.White.copy(alpha = 0.7f),
                 radius = t.radius * 0.25f,
                 center = Offset(t.x - t.radius * 0.3f, t.y - t.radius * 0.3f)
             )
         }
-        TargetShape.STAR -> {
+        TargetKind.STAR -> {
             val points = 5
             val outer = t.radius
             val inner = t.radius * 0.45f
@@ -553,8 +696,7 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
             path.close()
             drawPath(path = path, color = c)
         }
-        TargetShape.SQUARE -> {
-            // Axis-aligned rounded square; spin ignored for simplicity.
+        TargetKind.SQUARE -> {
             val s = t.radius * 1.6f
             drawRect(
                 color = c,
@@ -562,7 +704,7 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
                 size = Size(s, s)
             )
         }
-        TargetShape.TRIANGLE -> {
+        TargetKind.TRIANGLE -> {
             val r = t.radius
             val path = Path()
             for (i in 0 until 3) {
@@ -574,12 +716,11 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
             path.close()
             drawPath(path = path, color = c)
         }
-        TargetShape.HEART -> {
+        TargetKind.HEART -> {
             val r = t.radius
-            val path = Path()
-            // Simple heart built from two circles and a triangle approximation.
             val cx = t.x
             val cy = t.y
+            val path = Path()
             path.moveTo(cx, cy + r * 0.8f)
             path.cubicTo(
                 cx - r * 1.4f, cy + r * 0.1f,
@@ -594,7 +735,7 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
             path.close()
             drawPath(path = path, color = c)
         }
-        TargetShape.DIAMOND -> {
+        TargetKind.DIAMOND -> {
             val r = t.radius
             val path = Path()
             path.moveTo(t.x, t.y - r)
@@ -604,6 +745,7 @@ private fun DrawScope.drawTarget(t: FloatingTarget) {
             path.close()
             drawPath(path = path, color = c)
         }
+        TargetKind.EMOJI -> { /* handled above */ }
     }
 }
 
@@ -614,7 +756,6 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
     val progress = effect.age
     val px = effect.x + effect.velocityX * progress * effect.maxAge * 0.06f
     val py = effect.y + effect.velocityY * progress * effect.maxAge * 0.06f
-
     val color = effect.color.copy(alpha = alpha)
 
     when (effect.type) {
@@ -635,30 +776,31 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
         }
         EffectType.SPARKLE -> {
             val r = effect.scale * 34f * (1f - progress * 0.3f)
+            val safeR = r.coerceAtLeast(1f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(color, Color.Transparent),
                     center = Offset(px, py),
-                    radius = max(r, 1f)
+                    radius = safeR
                 ),
-                radius = max(r, 1f),
+                radius = safeR,
                 center = Offset(px, py)
             )
         }
         EffectType.RAINBOW_TRAIL -> {
             val r = effect.scale * 14f * (1f - progress * 0.5f)
-            drawCircle(color = color, radius = r, center = Offset(px, py))
+            drawCircle(color = color, radius = r.coerceAtLeast(0.5f), center = Offset(px, py))
         }
         EffectType.CONFETTI -> {
-            val size = effect.scale * 14f * (1f - progress * 0.2f)
+            val sz = effect.scale * 14f * (1f - progress * 0.2f)
             if (!reducedMotion) {
                 drawRect(
                     color = color,
-                    topLeft = Offset(px - size / 2f, py - size / 2f),
-                    size = Size(size, size)
+                    topLeft = Offset(px - sz / 2f, py - sz / 2f),
+                    size = Size(sz, sz)
                 )
             } else {
-                drawCircle(color = color, radius = size / 2f, center = Offset(px, py))
+                drawCircle(color = color, radius = (sz / 2f).coerceAtLeast(0.5f), center = Offset(px, py))
             }
         }
         EffectType.RIPPLE_WAVE -> {
@@ -687,23 +829,26 @@ private fun DrawScope.drawEffect(effect: Effect, reducedMotion: Boolean) {
 
 // ── Theme helpers ─────────────────────────────────────────────────────────────
 
-private fun themeBackground(theme: PlayTheme): Color = when (theme) {
-    PlayTheme.SPACE -> SpaceTheme.background
-    PlayTheme.OCEAN -> OceanTheme.background
-    PlayTheme.RAINBOW -> RainbowTheme.background
-    PlayTheme.SHAPES -> ShapesTheme.background
-}
-
+/**
+ * Returns the effect color palette for the given theme.
+ * These are used for spawning burst/trail/ripple effects — not the background
+ * (which ThemeBackground handles entirely).
+ */
 private fun themeColorPalette(theme: PlayTheme): List<Color> = when (theme) {
     PlayTheme.SPACE -> listOf(
-        SpaceTheme.primary, SpaceTheme.secondary, SpaceTheme.accent,
-        Color(0xFFE040FB), Color(0xFF40C4FF), Color(0xFFFFFF00)
+        Color(0xFF7C4DFF), Color(0xFF40C4FF), Color(0xFFE040FB),
+        Color(0xFFFFFF00), Color(0xFF69F0AE), Color(0xFFFF80AB)
     )
     PlayTheme.OCEAN -> listOf(
-        OceanTheme.primary, OceanTheme.secondary, OceanTheme.accent,
-        Color(0xFF00E5FF), Color(0xFF80DEEA), Color(0xFFB2EBF2)
+        Color(0xFF00B0FF), Color(0xFF00E5FF), Color(0xFF80DEEA),
+        Color(0xFF1DE9B6), Color(0xFFB2EBF2), Color(0xFF40C4FF)
     )
-    PlayTheme.RAINBOW -> RainbowTheme.colors
-    PlayTheme.SHAPES -> ShapesTheme.colors
+    PlayTheme.RAINBOW -> listOf(
+        Color(0xFFFF5252), Color(0xFFFF6D00), Color(0xFFFFD740),
+        Color(0xFF69F0AE), Color(0xFF40C4FF), Color(0xFFE040FB)
+    )
+    PlayTheme.SHAPES -> listOf(
+        Color(0xFFFF80AB), Color(0xFF82B1FF), Color(0xFFB9F6CA),
+        Color(0xFFFFD180), Color(0xFFEA80FC), Color(0xFF84FFFF)
+    )
 }
-
