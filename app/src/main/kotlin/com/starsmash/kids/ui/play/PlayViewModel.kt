@@ -53,6 +53,7 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
         overstimGuard.enabled = settings.overstimulationGuardEnabled
         audioEngine.soundEnabled = settings.soundEnabled
         audioEngine.setSoundMode(settings.soundMode)
+        audioEngine.setMusicTrack(settings.musicTrack)
 
         // AudioEngine.start() does file I/O (synthesising WAVs into cacheDir
         // on first launch) so push it onto a background dispatcher. All
@@ -124,6 +125,7 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
             overstimGuard.enabled = settings.overstimulationGuardEnabled
             audioEngine.soundEnabled = settings.soundEnabled
             audioEngine.setSoundMode(settings.soundMode)
+            audioEngine.setMusicTrack(settings.musicTrack)
             _playState.value = _playState.value.copy(settings = settings)
         }
     }

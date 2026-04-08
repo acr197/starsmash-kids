@@ -76,16 +76,22 @@ object SoundSynth {
         return out
     }
 
+    /** Identifier for a generated background music loop style. */
+    enum class MusicStyle { ARCADE, ADVENTURE, BUBBLE_POP }
+
     /**
-     * Generate the background music loop. ~12 seconds of soft pentatonic
-     * arpeggios over a gentle bass pulse – meant to loop seamlessly.
-     * Returns the written file path.
+     * Generate a background music loop in the given style. Each style is a
+     * ~12 s loop designed to seam smoothly. Files are cached in [cacheDir].
      */
-    fun generateMusicLoop(cacheDir: File): File {
+    fun generateMusicLoop(cacheDir: File, style: MusicStyle = MusicStyle.ARCADE): File {
         cacheDir.mkdirs()
-        val file = File(cacheDir, "ssk_music_loop.wav")
+        val file = File(cacheDir, "ssk_music_${style.name.lowercase()}.wav")
         if (!file.exists() || file.length() < 1024) {
-            val samples = renderMusicLoop()
+            val samples = when (style) {
+                MusicStyle.ARCADE -> renderMusicLoopArcade()
+                MusicStyle.ADVENTURE -> renderMusicLoopAdventure()
+                MusicStyle.BUBBLE_POP -> renderMusicLoopBubblePop()
+            }
             writeWav(samples, MUSIC_SAMPLE_RATE, file)
         }
         return file
@@ -115,32 +121,51 @@ object SoundSynth {
     // crowding rapid tap play.
 
     /**
-     * Mario-ish coin: two short sine pluck notes, E5 then B5, each with a fast
-     * exponential decay. Total length ~180 ms.
+     * Arcade coin / jackpot: the classic two-note Mario coin (E5 -> B5) with
+     * a bright triangle-wave harmonic on top and a tiny shimmer tail for
+     * that "you just won" casino feel. Total length ~260 ms.
      */
     private fun coinDing(): ShortArray {
+        val dur = 0.26f
+        val n = (SFX_SAMPLE_RATE * dur).toInt()
+        val buf = ShortArray(n)
+        val twoPi = (2f * PI).toFloat()
         val e5 = 659.25f
         val b5 = 987.77f
-        val first = sinePluck(e5, 0.06f, amp = 0.55f)
-        val second = sinePluck(b5, 0.13f, amp = 0.55f)
-        return concatenate(first, second)
+        val split = (n * 0.25f).toInt() // pitch jump at 25%
+        for (i in 0 until n) {
+            val t = i.toFloat() / SFX_SAMPLE_RATE
+            val freq = if (i < split) e5 else b5
+            // Local time since note start (for per-note envelope).
+            val tLocal = if (i < split) t else (i - split).toFloat() / SFX_SAMPLE_RATE
+            val attack = min(tLocal / 0.003f, 1f)
+            val decay = exp(-6f * tLocal)
+            val env = attack * decay
+            // Sine + half-amplitude octave harmonic => brighter "arcade" tone.
+            val s = sin(twoPi * freq * t) * 0.55f +
+                sin(twoPi * freq * 2f * t) * 0.20f +
+                sin(twoPi * freq * 3f * t) * 0.08f
+            buf[i] = toPcm(s * env * 0.55f)
+        }
+        return buf
     }
 
     /**
-     * Calm "chime": soft sine + octave harmonic, 250 ms, gentle exponential
-     * decay. No attack transient.
+     * Calm low "chime": sine around 290 Hz with a soft fifth harmonic above.
+     * Much lower than the previous C5/C6 version so it never feels shrill.
+     * ~280 ms.
      */
     private fun chimeSoft(): ShortArray {
         val dur = 0.28f
         val n = (SFX_SAMPLE_RATE * dur).toInt()
         val buf = ShortArray(n)
-        val f1 = 523.25f // C5
-        val f2 = 1046.5f // C6
+        val f1 = 293.66f // D4
+        val f2 = 440f    // A4 (a soft fifth above)
         val twoPi = (2f * PI).toFloat()
         for (i in 0 until n) {
             val t = i.toFloat() / SFX_SAMPLE_RATE
-            val env = exp(-4.5f * t)
-            val s = 0.55f * sin(twoPi * f1 * t) + 0.25f * sin(twoPi * f2 * t)
+            val env = exp(-5f * t)
+            val s = 0.55f * sin(twoPi * f1 * t) + 0.18f * sin(twoPi * f2 * t)
             buf[i] = toPcm(s * env * 0.45f)
         }
         return applyFadeIn(buf, 0.004f)
@@ -235,8 +260,8 @@ object SoundSynth {
         var phase = 0f
         for (i in 0 until n) {
             val t = i.toFloat() / SFX_SAMPLE_RATE
-            // Frequency sweeps from 900 Hz down to 350 Hz.
-            val freq = 900f - 550f * (t / dur).pow(0.5f)
+            // Frequency sweeps from 600 Hz down to 220 Hz - softer than before.
+            val freq = 600f - 380f * (t / dur).pow(0.5f)
             phase += twoPi * freq / SFX_SAMPLE_RATE
             val attack = min(t / 0.006f, 1f)
             val decay = exp(-6f * t)
@@ -267,11 +292,26 @@ object SoundSynth {
     }
 
     /**
-     * Glass ping – a single sine pluck at ~900 Hz, ~260 ms with a long decay.
-     * Used for calm-mode target hits.
+     * Low wooden knock: short attack, deep thud at ~230 Hz. Used for calm-mode
+     * target hits. Much lower than the previous 880 Hz "glass ping" which felt
+     * shrill and ringing. ~220 ms.
      */
     private fun glassPing(): ShortArray {
-        return sinePluck(880f, 0.26f, amp = 0.55f, decayRate = 6f)
+        val dur = 0.22f
+        val n = (SFX_SAMPLE_RATE * dur).toInt()
+        val buf = ShortArray(n)
+        val twoPi = (2f * PI).toFloat()
+        val f1 = 230f
+        val f2 = 345f
+        for (i in 0 until n) {
+            val t = i.toFloat() / SFX_SAMPLE_RATE
+            val attack = min(t / 0.004f, 1f)
+            val decay = exp(-7f * t)
+            val env = attack * decay
+            val s = 0.65f * sin(twoPi * f1 * t) + 0.20f * sin(twoPi * f2 * t)
+            buf[i] = toPcm(s * env * 0.45f)
+        }
+        return buf
     }
 
     /**
@@ -302,11 +342,11 @@ object SoundSynth {
     // ── Music loop ─────────────────────────────────────────────────────────
 
     /**
-     * Generate a ~12 s pentatonic arpeggio over a soft bass pulse, designed
-     * to loop seamlessly. Very deliberately minimal – no drums, no sharp
-     * edges. Uses [MUSIC_SAMPLE_RATE] to keep the file <1 MB.
+     * ARCADE: upbeat pentatonic arpeggio in C major over a soft bass pulse.
+     * Inspired by the cheerful Super Mario / Kirby overworld themes -
+     * bouncy, happy, never harsh. ~11 s loop.
      */
-    private fun renderMusicLoop(): ShortArray {
+    private fun renderMusicLoopArcade(): ShortArray {
         val sr = MUSIC_SAMPLE_RATE
         // Pentatonic C major: C D E G A, across two octaves.
         val arp = floatArrayOf(
@@ -345,7 +385,106 @@ object SoundSynth {
                 }
             }
         }
-        // Soft master gain and clamp.
+        return normaliseAndQuantise(buf, totalSamples)
+    }
+
+    /**
+     * ADVENTURE: slower melodic loop in A minor with a longer held lead note
+     * and a walking bass. Inspired by the exploration themes of early
+     * Zelda / Kirby's Dream Land. ~12 s loop.
+     */
+    private fun renderMusicLoopAdventure(): ShortArray {
+        val sr = MUSIC_SAMPLE_RATE
+        // A minor melody (A4 C5 E5 D5 C5 E5 D5 B4)
+        val melody = floatArrayOf(
+            440.00f, 523.25f, 659.25f, 587.33f,
+            523.25f, 659.25f, 587.33f, 493.88f
+        )
+        val bass = floatArrayOf(110.00f, 146.83f, 164.81f, 146.83f) // A2 D3 E3 D3
+        val stepSec = 0.42f
+        val totalSteps = melody.size * 4
+        val totalSamples = (sr * stepSec * totalSteps).toInt()
+        val buf = FloatArray(totalSamples)
+        val twoPi = (2f * PI).toFloat()
+
+        for (step in 0 until totalSteps) {
+            val note = melody[step % melody.size]
+            val startSample = (step * stepSec * sr).toInt()
+            val noteLen = (stepSec * sr * 0.85f).toInt()
+            for (i in 0 until noteLen) {
+                val t = i.toFloat() / sr
+                // Slower decay for a sustained feel.
+                val env = exp(-1.8f * t) * min(t / 0.025f, 1f)
+                val s = sin(twoPi * note * t) * 0.26f +
+                    sin(twoPi * note * 2f * t) * 0.05f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+            val bassNote = bass[(step / 2) % bass.size]
+            val bassLen = (stepSec * sr * 1.8f).toInt()
+            for (i in 0 until bassLen) {
+                val t = i.toFloat() / sr
+                val env = exp(-1.0f * t) * min(t / 0.03f, 1f)
+                val s = sin(twoPi * bassNote * t) * 0.20f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+        }
+        return normaliseAndQuantise(buf, totalSamples)
+    }
+
+    /**
+     * BUBBLE_POP: gentle G major ostinato over a soft pad, with every other
+     * note an octave up - feels like a Kirby / Animal Crossing cosy tune.
+     * ~11 s loop.
+     */
+    private fun renderMusicLoopBubblePop(): ShortArray {
+        val sr = MUSIC_SAMPLE_RATE
+        // G major pentatonic: G A B D E, with octave jumps
+        val lead = floatArrayOf(
+            392.00f, 783.99f, 440.00f, 493.88f,
+            587.33f, 659.25f, 783.99f, 587.33f
+        )
+        val pad = floatArrayOf(196.00f, 246.94f, 293.66f) // G3 B3 D4
+        val stepSec = 0.32f
+        val totalSteps = lead.size * 4
+        val totalSamples = (sr * stepSec * totalSteps).toInt()
+        val buf = FloatArray(totalSamples)
+        val twoPi = (2f * PI).toFloat()
+
+        for (step in 0 until totalSteps) {
+            val note = lead[step % lead.size]
+            val startSample = (step * stepSec * sr).toInt()
+            val noteLen = (stepSec * sr * 0.9f).toInt()
+            for (i in 0 until noteLen) {
+                val t = i.toFloat() / sr
+                val env = exp(-4.5f * t) * min(t / 0.01f, 1f)
+                // Triangle-ish by stacking odd harmonics
+                val s = sin(twoPi * note * t) * 0.28f +
+                    sin(twoPi * note * 3f * t) * 0.04f
+                val idx = startSample + i
+                if (idx < totalSamples) buf[idx] += s * env
+            }
+        }
+        // Slow sustained pad underneath, cycling every 4 steps.
+        val padStepSamples = (stepSec * 4f * sr).toInt()
+        for (seg in 0 until (totalSamples / padStepSamples + 1)) {
+            val padNote = pad[seg % pad.size]
+            val padStart = seg * padStepSamples
+            val padLen = (padStepSamples * 1.2f).toInt()
+            for (i in 0 until padLen) {
+                val t = i.toFloat() / sr
+                val env = min(t / 0.4f, 1f) * (1f - min(t / (padLen.toFloat() / sr), 1f) * 0.4f)
+                val s = sin(twoPi * padNote * t) * 0.12f
+                val idx = padStart + i
+                if (idx in 0 until totalSamples) buf[idx] += s * env
+            }
+        }
+        return normaliseAndQuantise(buf, totalSamples)
+    }
+
+    /** Normalise a float buffer to 0.85 peak and quantise to 16-bit signed. */
+    private fun normaliseAndQuantise(buf: FloatArray, totalSamples: Int): ShortArray {
         val out = ShortArray(totalSamples)
         var peak = 0f
         for (v in buf) if (kotlin.math.abs(v) > peak) peak = kotlin.math.abs(v)
