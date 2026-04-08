@@ -600,14 +600,14 @@ private fun ExitScoreDialog(
                 )
                 if (isHighScore) {
                     androidx.compose.foundation.layout.Spacer(
-                        androidx.compose.foundation.layout.Modifier.height(12.dp)
+                        Modifier.height(12.dp)
                     )
                     androidx.compose.material3.Text(
                         text = "Enter a name to save to the leaderboard:",
                         style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
                     )
                     androidx.compose.foundation.layout.Spacer(
-                        androidx.compose.foundation.layout.Modifier.height(8.dp)
+                        Modifier.height(8.dp)
                     )
                     androidx.compose.material3.OutlinedTextField(
                         value = name,
@@ -616,7 +616,7 @@ private fun ExitScoreDialog(
                         },
                         singleLine = true,
                         placeholder = { androidx.compose.material3.Text("Your name") },
-                        modifier = androidx.compose.foundation.layout.Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
