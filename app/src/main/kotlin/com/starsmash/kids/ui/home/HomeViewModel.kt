@@ -5,8 +5,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.starsmash.kids.settings.AppSettings
 import com.starsmash.kids.settings.EffectsIntensity
+import com.starsmash.kids.settings.MusicTrack
 import com.starsmash.kids.settings.PlayTheme
 import com.starsmash.kids.settings.SoundMode
+import com.starsmash.kids.settings.TrailLength
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,7 +35,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSoundEnabled(enabled: Boolean) = update { it.copy(soundEnabled = enabled) }
     fun setSoundMode(mode: SoundMode) = update { it.copy(soundMode = mode) }
+    fun setTrailSoundEnabled(enabled: Boolean) = update { it.copy(trailSoundEnabled = enabled) }
+    fun setMusicTrack(track: MusicTrack) = update { it.copy(musicTrack = track) }
     fun setEffectsIntensity(intensity: EffectsIntensity) = update { it.copy(effectsIntensity = intensity) }
+    fun setTrailLength(length: TrailLength) = update { it.copy(trailLength = length) }
     fun setPlayTheme(theme: PlayTheme) = update { it.copy(playTheme = theme) }
     fun setKeepScreenAwake(enabled: Boolean) = update { it.copy(keepScreenAwake = enabled) }
     fun setReducedMotion(enabled: Boolean) = update { it.copy(reducedMotion = enabled) }

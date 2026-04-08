@@ -5,20 +5,26 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.starsmash.kids.settings.EffectsIntensity
+import com.starsmash.kids.settings.MusicTrack
 import com.starsmash.kids.settings.PlayTheme
 import com.starsmash.kids.settings.SoundMode
+import com.starsmash.kids.settings.TrailLength
 
 /**
  * Parent-facing setup screen.
@@ -35,29 +41,6 @@ fun HomeScreen(
     viewModel: HomeViewModel = viewModel()
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-
-    // Info dialog state
-    var showAdaptivePlayInfo by remember { mutableStateOf(false) }
-    var showOverstimInfo by remember { mutableStateOf(false) }
-
-    if (showAdaptivePlayInfo) {
-        InfoDialog(
-            title = "Adaptive Play",
-            message = "Adaptive Play adjusts visuals and sounds in real time based on how your child is interacting. " +
-                    "It uses simple rule-based logic to detect activity level — not machine learning or personal data collection.",
-            onDismiss = { showAdaptivePlayInfo = false }
-        )
-    }
-
-    if (showOverstimInfo) {
-        InfoDialog(
-            title = "Overstimulation Guard",
-            message = "Overstimulation Guard automatically softens the experience when play becomes too intense. " +
-                    "If your child plays very energetically for more than 5 seconds, effects and volume are gently reduced. " +
-                    "This is rule-based logic — no data is collected.",
-            onDismiss = { showOverstimInfo = false }
-        )
-    }
 
     LazyColumn(
         modifier = Modifier
@@ -111,21 +94,46 @@ fun HomeScreen(
             SettingsCard(title = "Sound") {
                 SettingsToggleRow(
                     label = "Sound",
+                    info = "Master switch for all sound effects and music.",
                     checked = settings.soundEnabled,
                     onCheckedChange = viewModel::setSoundEnabled
                 )
                 if (settings.soundEnabled) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Sound Mode",
-                        style = MaterialTheme.typography.labelLarge,
-                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                    SettingsToggleRow(
+                        label = "Trail Sounds",
+                        info = "Little chirps and blips while dragging a finger across the screen. Turn off for silent trails.",
+                        checked = settings.trailSoundEnabled,
+                        onCheckedChange = viewModel::setTrailSoundEnabled
                     )
-                    RadioGroupRow(
+                    Spacer(Modifier.height(8.dp))
+                    LabeledChoice(
+                        label = "Sound Mode",
+                        info = "Playful: bouncy pops and arcade coin dings. Calm: soft wood taps and gentle drops.",
                         options = listOf("Calm", "Playful"),
                         selected = if (settings.soundMode == SoundMode.CALM) "Calm" else "Playful",
                         onSelected = { choice ->
                             viewModel.setSoundMode(if (choice == "Calm") SoundMode.CALM else SoundMode.PLAYFUL)
+                        }
+                    )
+                    LabeledChoice(
+                        label = "Music",
+                        info = "Choose a looping background music track, or turn it off.",
+                        options = listOf("Off", "Arcade", "Adventure", "Bubbly"),
+                        selected = when (settings.musicTrack) {
+                            MusicTrack.NONE -> "Off"
+                            MusicTrack.ARCADE -> "Arcade"
+                            MusicTrack.ADVENTURE -> "Adventure"
+                            MusicTrack.BUBBLE_POP -> "Bubbly"
+                        },
+                        onSelected = { choice ->
+                            viewModel.setMusicTrack(
+                                when (choice) {
+                                    "Arcade" -> MusicTrack.ARCADE
+                                    "Adventure" -> MusicTrack.ADVENTURE
+                                    "Bubbly" -> MusicTrack.BUBBLE_POP
+                                    else -> MusicTrack.NONE
+                                }
+                            )
                         }
                     )
                 }
@@ -135,12 +143,9 @@ fun HomeScreen(
         // ── Effects Settings ─────────────────────────────────────────────────
         item {
             SettingsCard(title = "Visual Effects") {
-                Text(
-                    text = "Effects Intensity",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
-                )
-                RadioGroupRow(
+                LabeledChoice(
+                    label = "Effects Intensity",
+                    info = "How big, fast, and vibrant taps and bursts look. Also changes how quickly backgrounds drift.",
                     options = listOf("Low", "Medium", "High"),
                     selected = when (settings.effectsIntensity) {
                         EffectsIntensity.LOW -> "Low"
@@ -157,26 +162,39 @@ fun HomeScreen(
                         )
                     }
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = "Theme",
-                    style = MaterialTheme.typography.labelLarge,
-                    modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                LabeledChoice(
+                    label = "Trail Length",
+                    info = "How long drag trails stay on screen before fading away.",
+                    options = listOf("Short", "Medium", "Long"),
+                    selected = when (settings.trailLength) {
+                        TrailLength.SHORT -> "Short"
+                        TrailLength.MEDIUM -> "Medium"
+                        TrailLength.LONG -> "Long"
+                    },
+                    onSelected = { choice ->
+                        viewModel.setTrailLength(
+                            when (choice) {
+                                "Short" -> TrailLength.SHORT
+                                "Long" -> TrailLength.LONG
+                                else -> TrailLength.MEDIUM
+                            }
+                        )
+                    }
                 )
-                RadioGroupRow(
-                    options = listOf("Space", "Ocean", "Rainbow", "Shapes"),
+                LabeledChoice(
+                    label = "Theme",
+                    info = "The animated background behind play. Space has drifting nebulas, Ocean has rising bubbles, Rainbow flows through colors.",
+                    options = listOf("Space", "Ocean", "Rainbow"),
                     selected = when (settings.playTheme) {
                         PlayTheme.SPACE -> "Space"
                         PlayTheme.OCEAN -> "Ocean"
                         PlayTheme.RAINBOW -> "Rainbow"
-                        PlayTheme.SHAPES -> "Shapes"
                     },
                     onSelected = { choice ->
                         viewModel.setPlayTheme(
                             when (choice) {
                                 "Ocean" -> PlayTheme.OCEAN
                                 "Rainbow" -> PlayTheme.RAINBOW
-                                "Shapes" -> PlayTheme.SHAPES
                                 else -> PlayTheme.SPACE
                             }
                         )
@@ -185,11 +203,13 @@ fun HomeScreen(
                 Spacer(Modifier.height(8.dp))
                 SettingsToggleRow(
                     label = "Reduced Motion",
+                    info = "Freezes the animated background and cuts particle count for kids sensitive to motion.",
                     checked = settings.reducedMotion,
                     onCheckedChange = viewModel::setReducedMotion
                 )
                 SettingsToggleRow(
                     label = "Full Emoji Mode",
+                    info = "Spawns only emoji targets (animals, trucks, dinosaurs). Turn off to mix in simple shapes too.",
                     checked = settings.fullEmojiMode,
                     onCheckedChange = viewModel::setFullEmojiMode
                 )
@@ -201,16 +221,19 @@ fun HomeScreen(
             SettingsCard(title = "Interaction") {
                 SettingsToggleRow(
                     label = "Haptics (Vibration)",
+                    info = "Gentle vibration on taps and hits.",
                     checked = settings.hapticsEnabled,
                     onCheckedChange = viewModel::setHapticsEnabled
                 )
                 SettingsToggleRow(
                     label = "Idle Demo",
+                    info = "Shows a brief auto-play demo when the app has been idle for a while.",
                     checked = settings.idleDemo,
                     onCheckedChange = viewModel::setIdleDemo
                 )
                 SettingsToggleRow(
                     label = "Keep Screen Awake",
+                    info = "Prevents the screen from dimming or sleeping while play is active.",
                     checked = settings.keepScreenAwake,
                     onCheckedChange = viewModel::setKeepScreenAwake
                 )
@@ -220,17 +243,17 @@ fun HomeScreen(
         // ── AI / Adaptive Features ───────────────────────────────────────────
         item {
             SettingsCard(title = "Adaptive Features") {
-                SettingsToggleRowWithInfo(
+                SettingsToggleRow(
                     label = "Adaptive Play",
+                    info = "Quietly adjusts visuals and sounds based on how energetic the child's touches are. Rule-based, no data collected.",
                     checked = settings.adaptivePlayEnabled,
-                    onCheckedChange = viewModel::setAdaptivePlayEnabled,
-                    onInfoClick = { showAdaptivePlayInfo = true }
+                    onCheckedChange = viewModel::setAdaptivePlayEnabled
                 )
-                SettingsToggleRowWithInfo(
+                SettingsToggleRow(
                     label = "Overstimulation Guard",
+                    info = "If play gets very intense, gently softens effects and volume. Rule-based, no data collected.",
                     checked = settings.overstimulationGuardEnabled,
-                    onCheckedChange = viewModel::setOverstimulationGuardEnabled,
-                    onInfoClick = { showOverstimInfo = true }
+                    onCheckedChange = viewModel::setOverstimulationGuardEnabled
                 )
             }
         }
@@ -274,34 +297,70 @@ private fun SettingsCard(
     }
 }
 
+// ── Info icon with press-and-hold popup ─────────────────────────────────────
+
+/**
+ * Small circled "i" rendered to the LEFT of a setting's label. Press and hold
+ * to show an explanatory popup offset down-and-right so the finger doesn't
+ * cover it. Release to dismiss.
+ */
+@Composable
+private fun InfoIcon(
+    info: String,
+    label: String
+) {
+    var showPopup by remember { mutableStateOf(false) }
+    Box {
+        Icon(
+            imageVector = Icons.Outlined.Info,
+            contentDescription = "About $label - press and hold",
+            modifier = Modifier
+                .size(20.dp)
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val anyPressed = event.changes.any { it.pressed }
+                            showPopup = anyPressed
+                            event.changes.forEach { it.consume() }
+                        }
+                    }
+                },
+            tint = MaterialTheme.colorScheme.primary
+        )
+        if (showPopup) {
+            Popup(
+                alignment = Alignment.TopStart,
+                offset = IntOffset(x = 56, y = 56),
+                properties = PopupProperties(focusable = false)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.inverseSurface,
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier.widthIn(max = 260.dp)
+                ) {
+                    Text(
+                        text = info,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
 // ── Row components ───────────────────────────────────────────────────────────
 
 @Composable
 private fun SettingsToggleRow(
     label: String,
+    info: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.weight(1f)
-        )
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
-    }
-}
-
-@Composable
-private fun SettingsToggleRowWithInfo(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-    onInfoClick: () -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -312,72 +371,60 @@ private fun SettingsToggleRowWithInfo(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.weight(1f)
         ) {
+            InfoIcon(info = info, label = label)
+            Spacer(Modifier.width(10.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodyLarge
-            )
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                imageVector = Icons.Filled.Info,
-                contentDescription = "About $label",
-                modifier = Modifier
-                    .size(18.dp)
-                    .clickable { onInfoClick() },
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
+/**
+ * Label + press-and-hold info icon + a horizontal row of FilterChip options.
+ * Used for Effects Intensity, Trail Length, Theme, Sound Mode, Music.
+ */
 @Composable
-private fun RadioGroupRow(
+private fun LabeledChoice(
+    label: String,
+    info: String,
     options: List<String>,
     selected: String,
     onSelected: (String) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        options.forEach { option ->
-            FilterChip(
-                selected = selected == option,
-                onClick = { onSelected(option) },
-                label = {
-                    Text(
-                        text = option,
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                },
-                modifier = Modifier.weight(1f)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp, top = 4.dp)
+        ) {
+            InfoIcon(info = info, label = label)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge
             )
         }
-    }
-}
-
-// ── Info dialog ───────────────────────────────────────────────────────────────
-
-@Composable
-private fun InfoDialog(
-    title: String,
-    message: String,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(text = title, style = MaterialTheme.typography.titleLarge)
-        },
-        text = {
-            Text(text = message, style = MaterialTheme.typography.bodyMedium)
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Got it")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            options.forEach { option ->
+                FilterChip(
+                    selected = selected == option,
+                    onClick = { onSelected(option) },
+                    label = {
+                        Text(
+                            text = option,
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                )
             }
         }
-    )
+    }
 }
 
 // ── Screen Pinning info card ──────────────────────────────────────────────────

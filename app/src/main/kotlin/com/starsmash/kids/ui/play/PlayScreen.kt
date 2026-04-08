@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.starsmash.kids.settings.EffectsIntensity
 import com.starsmash.kids.settings.PlayTheme
+import com.starsmash.kids.settings.TrailLength
 import com.starsmash.kids.touch.TouchEventType
 import kotlin.math.*
 import kotlin.random.Random
@@ -107,8 +108,9 @@ fun PlayScreen(
     var score by remember { mutableIntStateOf(0) }
     var backPressCount by remember { mutableIntStateOf(0) }
     var toastMessage by remember { mutableStateOf<String?>(null) }
-    val sessionStart = remember { System.currentTimeMillis() }
-    var bgPhase by remember { mutableFloatStateOf(0f) }
+    // Elapsed seconds since play started, updated once per frame from withFrameMillis.
+    // Used as the single source of truth for both gameplay and background timing.
+    var elapsedSecState by remember { mutableFloatStateOf(0f) }
 
     BackHandler {
         backPressCount += 1
@@ -152,22 +154,46 @@ fun PlayScreen(
         EffectsIntensity.HIGH -> 1.15f
     }
 
-    val phaseSpeed = when (settings.effectsIntensity) {
-        EffectsIntensity.LOW -> 0.004f
-        EffectsIntensity.MEDIUM -> 0.007f
-        EffectsIntensity.HIGH -> 0.012f
+    // Background animation speed multiplier. Low = slow drift, High = noticeably
+    // faster but still smooth.
+    val animationSpeed = when (settings.effectsIntensity) {
+        EffectsIntensity.LOW -> 0.7f
+        EffectsIntensity.MEDIUM -> 1.0f
+        EffectsIntensity.HIGH -> 1.6f
     }
 
+    // Trail length multiplier - how long drag trails persist on screen.
+    val trailLifeMul = when (settings.trailLength) {
+        TrailLength.SHORT -> 0.5f
+        TrailLength.MEDIUM -> 1.0f
+        TrailLength.LONG -> 2.2f
+    }
+    val currentTrailLifeMul by rememberUpdatedState(trailLifeMul)
+
+    // Intensity also scales burst travel distance and lifetime.
+    val effectLifeMul = when (settings.effectsIntensity) {
+        EffectsIntensity.LOW -> 0.75f
+        EffectsIntensity.MEDIUM -> 1.0f
+        EffectsIntensity.HIGH -> 1.4f
+    }
+    val currentEffectLifeMul by rememberUpdatedState(effectLifeMul)
+
+    val trailSoundEnabled = settings.trailSoundEnabled
     val fullEmojiMode = settings.fullEmojiMode
 
     // Animation loop: advances effect ages, moves targets, spawns new ones.
+    // CRITICAL: elapsed time must be relative to a frame-time baseline captured
+    // inside the loop. Mixing System.currentTimeMillis() (wallclock) with
+    // withFrameMillis() (uptime since boot) produces nonsense and breaks the
+    // >= 5s target-spawn gate.
     LaunchedEffect(screenSize) {
         if (screenSize == IntSize.Zero) return@LaunchedEffect
         val width = screenSize.width.toFloat()
         val height = screenSize.height.toFloat()
         val rng = Random
 
-        var lastFrameTime = withFrameMillis { it }
+        val firstFrameTime = withFrameMillis { it }
+        var lastFrameTime = firstFrameTime
         var nextTargetId = 0L
 
         while (true) {
@@ -176,13 +202,9 @@ fun PlayScreen(
             lastFrameTime = currentFrameTime
             val deltaMs = if (dt > 0) dt.toFloat() else 16f
 
-            val elapsedSec = (currentFrameTime - sessionStart) / 1000f
+            val elapsedSec = (currentFrameTime - firstFrameTime) / 1000f
+            elapsedSecState = elapsedSec
             val difficulty = (0.4f + elapsedSec / 60f).coerceAtMost(1.6f)
-
-            // Advance background phase.
-            if (!settings.reducedMotion) {
-                bgPhase = (bgPhase + phaseSpeed * (deltaMs / 1000f) * difficulty) % 1f
-            }
 
             // Advance and expire effects.
             effects.removeAll { it.age >= 1f }
@@ -279,13 +301,15 @@ fun PlayScreen(
                                     score++
                                     spawnTargetBurst(
                                         effects, hit,
-                                        currentThemeColors, currentBaseScale, currentReducedMotion
+                                        currentThemeColors, currentBaseScale,
+                                        currentReducedMotion, currentEffectLifeMul
                                     )
                                     viewModel.onTargetHit()
                                 } else {
                                     spawnTapBurst(
                                         effects, pos.x, pos.y,
-                                        currentThemeColors, currentBaseScale, currentReducedMotion
+                                        currentThemeColors, currentBaseScale,
+                                        currentReducedMotion, currentEffectLifeMul
                                     )
                                     val evtType = when {
                                         activeCount >= 4 -> TouchEventType.PalmLikeBurst(pos.x, pos.y)
@@ -307,12 +331,16 @@ fun PlayScreen(
                                         lastPositions[id] = pos
                                         spawnTrail(
                                             effects, pos.x, pos.y,
-                                            currentThemeColors, currentBaseScale
+                                            currentThemeColors, currentBaseScale,
+                                            currentTrailLifeMul
                                         )
-                                        viewModel.onTouchEvent(
-                                            TouchEventType.SingleDrag(pos.x, pos.y),
-                                            activeCount
-                                        )
+                                        // Only play drag sounds if trail sound is enabled.
+                                        if (trailSoundEnabled) {
+                                            viewModel.onTouchEvent(
+                                                TouchEventType.SingleDrag(pos.x, pos.y),
+                                                activeCount
+                                            )
+                                        }
                                         // Opportunistic target hit-check on drag.
                                         val hitIdx = targets.indexOfLast { t ->
                                             hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
@@ -323,7 +351,8 @@ fun PlayScreen(
                                             score++
                                             spawnTargetBurst(
                                                 effects, hit,
-                                                currentThemeColors, currentBaseScale, currentReducedMotion
+                                                currentThemeColors, currentBaseScale,
+                                                currentReducedMotion, currentEffectLifeMul
                                             )
                                             viewModel.onTargetHit()
                                         }
@@ -341,45 +370,46 @@ fun PlayScreen(
                         if (anyNewPress && activeCount >= 3) {
                             val cx = changes.filter { it.pressed }.map { it.position.x }.average().toFloat()
                             val cy = changes.filter { it.pressed }.map { it.position.y }.average().toFloat()
-                            spawnRipple(effects, cx, cy, currentThemeColors, currentBaseScale)
+                            spawnRipple(effects, cx, cy, currentThemeColors, currentBaseScale, currentEffectLifeMul)
                         }
                     }
                 }
             }
     ) {
-        // Score display — always on top.
+        // Canvas renders FIRST so the score Text draws on top of it.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            with(ThemeBackground) {
+                drawThemeBackground(
+                    theme = settings.playTheme,
+                    timeSec = elapsedSecState,
+                    reducedMotion = settings.reducedMotion,
+                    vibrancy = vibrancy,
+                    animationSpeed = animationSpeed
+                )
+            }
+            targets.forEach { drawFloatingTarget(it) }
+            effects.forEach { drawEffect(it, settings.reducedMotion) }
+        }
+
+        // Score display — rendered AFTER the canvas so it's always visible on top.
         Text(
             text = "⭐ $score",
-            color = Color.White.copy(alpha = 0.85f),
-            fontSize = 28.sp,
+            color = Color.White.copy(alpha = 0.95f),
+            fontSize = 36.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 36.dp),
             style = TextStyle(
                 shadow = Shadow(
-                    color = Color.Black.copy(alpha = 0.5f),
+                    color = Color.Black.copy(alpha = 0.7f),
                     offset = Offset(2f, 2f),
-                    blurRadius = 4f
+                    blurRadius = 6f
                 ),
-                fontSize = 28.sp,
+                fontSize = 36.sp,
                 fontWeight = FontWeight.Bold
             )
         )
-
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            with(ThemeBackground) {
-                drawThemeBackground(
-                    theme = settings.playTheme,
-                    phase = bgPhase,
-                    elapsedSec = ((System.currentTimeMillis() - sessionStart) / 1000f),
-                    reducedMotion = settings.reducedMotion,
-                    vibrancy = vibrancy
-                )
-            }
-            targets.forEach { drawFloatingTarget(it) }
-            effects.forEach { drawEffect(it, settings.reducedMotion) }
-        }
 
         // Guard overlay — subtle dimming.
         if (playState.isGuardActive) {
@@ -499,10 +529,11 @@ private fun spawnTapBurst(
     y: Float,
     colors: List<Color>,
     baseScale: Float,
-    reducedMotion: Boolean
+    reducedMotion: Boolean,
+    lifeMul: Float
 ) {
     val rng = Random
-    val maxAge = if (reducedMotion) 600f else 900f
+    val maxAge = (if (reducedMotion) 600f else 900f) * lifeMul
     val count = if (reducedMotion) 5 else 10
     repeat(count) { i ->
         val angle = (i.toFloat() / count) * 2f * PI.toFloat()
@@ -535,13 +566,14 @@ private fun spawnTrail(
     x: Float,
     y: Float,
     colors: List<Color>,
-    baseScale: Float
+    baseScale: Float,
+    trailLifeMul: Float
 ) {
     val rng = Random
     effects.add(
         Effect(
             x = x, y = y,
-            age = 0f, maxAge = 500f,
+            age = 0f, maxAge = 500f * trailLifeMul,
             color = colors[rng.nextInt(colors.size)],
             type = EffectType.RAINBOW_TRAIL,
             scale = baseScale
@@ -554,13 +586,14 @@ private fun spawnRipple(
     x: Float,
     y: Float,
     colors: List<Color>,
-    baseScale: Float
+    baseScale: Float,
+    lifeMul: Float
 ) {
     val rng = Random
     effects.add(
         Effect(
             x = x, y = y,
-            age = 0f, maxAge = 1200f,
+            age = 0f, maxAge = 1200f * lifeMul,
             color = colors[rng.nextInt(colors.size)],
             type = EffectType.RIPPLE_WAVE,
             scale = baseScale * 2.2f
@@ -572,12 +605,12 @@ private fun spawnRipple(
         effects.add(
             Effect(
                 x = x, y = y,
-                age = 0f, maxAge = 1000f,
+                age = 0f, maxAge = 1000f * lifeMul,
                 color = colors[rng.nextInt(colors.size)],
                 type = EffectType.CONFETTI,
                 scale = baseScale,
-                velocityX = cos(angle) * speed,
-                velocityY = sin(angle) * speed,
+                velocityX = cos(angle) * speed * lifeMul,
+                velocityY = sin(angle) * speed * lifeMul,
                 angle = rng.nextFloat() * 2f * PI.toFloat()
             )
         )
@@ -589,17 +622,18 @@ private fun spawnTargetBurst(
     hit: FloatingTarget,
     colors: List<Color>,
     baseScale: Float,
-    reducedMotion: Boolean
+    reducedMotion: Boolean,
+    lifeMul: Float
 ) {
     val rng = Random
     val count = if (reducedMotion) 12 else 22
     repeat(count) {
         val angle = rng.nextFloat() * 2f * PI.toFloat()
-        val speed = rng.nextFloat() * 9f + 3f
+        val speed = (rng.nextFloat() * 9f + 3f) * lifeMul
         effects.add(
             Effect(
                 x = hit.x, y = hit.y,
-                age = 0f, maxAge = 1100f,
+                age = 0f, maxAge = 1100f * lifeMul,
                 color = if (rng.nextBoolean()) hit.color else colors[rng.nextInt(colors.size)],
                 type = EffectType.CONFETTI,
                 scale = baseScale * 1.2f,
@@ -612,7 +646,7 @@ private fun spawnTargetBurst(
     effects.add(
         Effect(
             x = hit.x, y = hit.y,
-            age = 0f, maxAge = 900f,
+            age = 0f, maxAge = 900f * lifeMul,
             color = hit.color,
             type = EffectType.SPARKLE,
             scale = baseScale * 2f
@@ -621,7 +655,7 @@ private fun spawnTargetBurst(
     effects.add(
         Effect(
             x = hit.x, y = hit.y,
-            age = 0f, maxAge = 1000f,
+            age = 0f, maxAge = 1000f * lifeMul,
             color = hit.color,
             type = EffectType.RIPPLE_WAVE,
             scale = baseScale * 1.5f
@@ -634,12 +668,12 @@ private fun spawnTargetBurst(
             effects.add(
                 Effect(
                     x = hit.x, y = hit.y,
-                    age = 0f, maxAge = 800f,
+                    age = 0f, maxAge = 800f * lifeMul,
                     color = hit.color,
                     type = EffectType.STAR_BURST,
                     scale = baseScale * 1.5f,
-                    velocityX = cos(angle) * 6f,
-                    velocityY = sin(angle) * 6f,
+                    velocityX = cos(angle) * 6f * lifeMul,
+                    velocityY = sin(angle) * 6f * lifeMul,
                     angle = angle
                 )
             )
@@ -846,9 +880,5 @@ private fun themeColorPalette(theme: PlayTheme): List<Color> = when (theme) {
     PlayTheme.RAINBOW -> listOf(
         Color(0xFFFF5252), Color(0xFFFF6D00), Color(0xFFFFD740),
         Color(0xFF69F0AE), Color(0xFF40C4FF), Color(0xFFE040FB)
-    )
-    PlayTheme.SHAPES -> listOf(
-        Color(0xFFFF80AB), Color(0xFF82B1FF), Color(0xFFB9F6CA),
-        Color(0xFFFFD180), Color(0xFFEA80FC), Color(0xFF84FFFF)
     )
 }

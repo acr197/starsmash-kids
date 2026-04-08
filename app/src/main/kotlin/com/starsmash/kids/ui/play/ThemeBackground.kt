@@ -14,112 +14,121 @@ import kotlin.random.Random
 /**
  * ThemeBackground
  * ===============
- * Draws an animated, themed backdrop behind the play canvas. Each theme has
- * a distinct look:
+ * Draws a smooth, animated, themed backdrop behind the play canvas.
  *
- *   SPACE   – deep indigo base with a field of twinkling stars and a slow
- *             nebula gradient that drifts across the screen.
- *   OCEAN   – layered blue gradient with slow rising bubbles and a gentle
- *             horizontal "wave" tint sweep.
- *   RAINBOW – white base overlaid with large, slowly shifting rainbow
- *             bands – never harsh, always pastel-ish.
- *   SHAPES  – cream base with large soft pastel gradient blobs that drift
- *             slowly and gently hue-shift.
+ *   SPACE   - deep indigo gradient with two large nebulas slowly drifting
+ *             across the screen and hundreds of stars twinkling on a slow
+ *             continuous loop.
+ *   OCEAN   - layered blue gradient with rising bubbles and a slow vertical
+ *             shine band.
+ *   RAINBOW - smooth full-spectrum rainbow gradient that continuously
+ *             rotates its hue, with wide soft colour bands that segue into
+ *             each other (no hard lines).
  *
- * All themes phase-shift their palette over time based on the [phase]
- * parameter (0..1, wraps). The caller (PlayScreen) computes phase from
- * elapsed session time, session difficulty, and the effectsIntensity setting.
+ * All animation is driven by a single, monotonic [timeSec] argument. The
+ * caller passes the same elapsed seconds value used for gameplay timing,
+ * so the background and gameplay are perfectly in sync.
  *
- * Reduced-motion flag is honoured: when set, no motion is applied – the
+ * The [animationSpeed] argument is a multiplier set by the user's
+ * Effects Intensity choice. Higher values rotate / drift the background
+ * faster, but never to a jarring degree (max 1.6x normal).
+ *
+ * Reduced-motion flag is honoured: when set, no motion is applied - the
  * background renders as a static, calmer version.
  */
 object ThemeBackground {
 
     // Deterministic star positions so the sky is stable across frames.
-    private val stars: List<StarSeed> = List(80) {
+    private val stars: List<StarSeed> = List(120) {
         StarSeed(
             rx = Random.nextFloat(),
             ry = Random.nextFloat(),
             radius = 0.6f + Random.nextFloat() * 1.8f,
             twinklePhase = Random.nextFloat() * 2f * PI.toFloat(),
-            twinkleSpeed = 0.4f + Random.nextFloat() * 1.4f
+            twinkleSpeed = 0.25f + Random.nextFloat() * 0.6f
         )
     }
 
-    private val bubbles: List<BubbleSeed> = List(18) {
+    private val bubbles: List<BubbleSeed> = List(22) {
         BubbleSeed(
             rx = Random.nextFloat(),
             startRy = Random.nextFloat(),
             radius = 6f + Random.nextFloat() * 14f,
-            speed = 0.05f + Random.nextFloat() * 0.15f
+            speed = 0.04f + Random.nextFloat() * 0.10f
         )
     }
 
     fun DrawScope.drawThemeBackground(
         theme: PlayTheme,
-        phase: Float,            // 0..1 (wraps)
-        elapsedSec: Float,       // raw session seconds (for motion)
+        timeSec: Float,
         reducedMotion: Boolean,
-        vibrancy: Float          // 0.85 (LOW) – 1.15 (HIGH)
+        vibrancy: Float,            // 0.85 (LOW) - 1.15 (HIGH)
+        animationSpeed: Float       // 0.7 (LOW) - 1.6 (HIGH)
     ) {
         val w = size.width
         val h = size.height
-        val t = if (reducedMotion) 0f else elapsedSec
+        val t = if (reducedMotion) 0f else timeSec * animationSpeed
 
         when (theme) {
-            PlayTheme.SPACE -> drawSpace(w, h, t, phase, reducedMotion, vibrancy)
-            PlayTheme.OCEAN -> drawOcean(w, h, t, phase, reducedMotion, vibrancy)
-            PlayTheme.RAINBOW -> drawRainbow(w, h, t, phase, reducedMotion, vibrancy)
-            PlayTheme.SHAPES -> drawShapes(w, h, t, phase, reducedMotion, vibrancy)
+            PlayTheme.SPACE -> drawSpace(w, h, t, reducedMotion, vibrancy)
+            PlayTheme.OCEAN -> drawOcean(w, h, t, reducedMotion, vibrancy)
+            PlayTheme.RAINBOW -> drawRainbow(w, h, t, reducedMotion, vibrancy)
         }
     }
 
-    // ── SPACE ──────────────────────────────────────────────────────────────
+    // -- SPACE -----------------------------------------------------------------
 
     private fun DrawScope.drawSpace(
-        w: Float, h: Float, t: Float, phase: Float, reducedMotion: Boolean, vibrancy: Float
+        w: Float, h: Float, t: Float, reducedMotion: Boolean, vibrancy: Float
     ) {
-        // Deep indigo base with a slow hue-rotating nebula.
-        val baseTop = hsvBlend(0.68f, 0.72f, 0.10f, phase, 0.05f).scale(vibrancy)
-        val baseBottom = hsvBlend(0.74f, 0.70f, 0.06f, phase, 0.04f).scale(vibrancy)
+        // Deep indigo base. Constant - no per-frame palette changes.
+        val baseTop = Color(0xFF0A0820).scale(vibrancy)
+        val baseBottom = Color(0xFF120A2A).scale(vibrancy)
         drawRect(
-            brush = Brush.verticalGradient(listOf(baseTop, baseBottom)),
+            brush = Brush.verticalGradient(
+                colors = listOf(baseTop, baseBottom),
+                startY = 0f,
+                endY = h
+            ),
             size = Size(w, h)
         )
 
-        // Nebula – two large soft radial gradients that drift.
-        val cx1 = w * (0.3f + 0.1f * sin(t * 0.05f))
-        val cy1 = h * (0.35f + 0.08f * cos(t * 0.04f))
-        val nebula1 = hsvBlend(0.78f, 0.65f, 0.55f, phase, 0.15f).copy(alpha = 0.30f).scale(vibrancy)
+        // Two soft nebulas drifting along smooth Lissajous paths.
+        val driftA = 0.04f
+        val cx1 = w * (0.35f + 0.15f * sin(t * driftA))
+        val cy1 = h * (0.40f + 0.12f * cos(t * driftA * 0.8f))
+        val nebulaHueA = (0.78f + 0.04f * sin(t * 0.02f)) % 1f
+        val nebula1 = hsvToColor(nebulaHueA, 0.55f, 0.6f).copy(alpha = 0.32f).scale(vibrancy)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(nebula1, Color.Transparent),
                 center = Offset(cx1, cy1),
-                radius = w * 0.75f
+                radius = w * 0.85f
             ),
-            radius = w * 0.75f,
+            radius = w * 0.85f,
             center = Offset(cx1, cy1)
         )
 
-        val cx2 = w * (0.75f + 0.1f * cos(t * 0.04f))
-        val cy2 = h * (0.7f + 0.08f * sin(t * 0.03f))
-        val nebula2 = hsvBlend(0.92f, 0.55f, 0.55f, phase, 0.2f).copy(alpha = 0.25f).scale(vibrancy)
+        val cx2 = w * (0.70f + 0.15f * cos(t * driftA * 0.9f))
+        val cy2 = h * (0.65f + 0.12f * sin(t * driftA * 1.1f))
+        val nebulaHueB = (0.92f + 0.04f * cos(t * 0.025f) + 1f) % 1f
+        val nebula2 = hsvToColor(nebulaHueB, 0.55f, 0.55f).copy(alpha = 0.28f).scale(vibrancy)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(nebula2, Color.Transparent),
                 center = Offset(cx2, cy2),
-                radius = w * 0.7f
+                radius = w * 0.80f
             ),
-            radius = w * 0.7f,
+            radius = w * 0.80f,
             center = Offset(cx2, cy2)
         )
 
-        // Stars – deterministic positions, twinkling alpha.
+        // Stars - deterministic positions, slow continuous twinkle.
         for (s in stars) {
             val twinkle =
                 if (reducedMotion) 1f
                 else 0.5f + 0.5f * sin(t * s.twinkleSpeed + s.twinklePhase)
-            val color = Color.White.copy(alpha = 0.4f + 0.6f * twinkle)
+            val color = Color.White.copy(alpha = 0.35f + 0.65f * twinkle)
             drawCircle(
                 color = color,
                 radius = s.radius,
@@ -128,31 +137,37 @@ object ThemeBackground {
         }
     }
 
-    // ── OCEAN ──────────────────────────────────────────────────────────────
+    // -- OCEAN -----------------------------------------------------------------
 
     private fun DrawScope.drawOcean(
-        w: Float, h: Float, t: Float, phase: Float, reducedMotion: Boolean, vibrancy: Float
+        w: Float, h: Float, t: Float, reducedMotion: Boolean, vibrancy: Float
     ) {
-        val top = hsvBlend(0.55f, 0.85f, 0.25f, phase, 0.04f).scale(vibrancy)
-        val mid = hsvBlend(0.53f, 0.70f, 0.45f, phase, 0.05f).scale(vibrancy)
-        val bot = hsvBlend(0.50f, 0.55f, 0.65f, phase, 0.05f).scale(vibrancy)
+        val top = Color(0xFF0A4D8C).scale(vibrancy)
+        val mid = Color(0xFF1A82CC).scale(vibrancy)
+        val bot = Color(0xFF49B5E5).scale(vibrancy)
         drawRect(
             brush = Brush.verticalGradient(
-                0f to top,
-                0.55f to mid,
-                1f to bot
+                colorStops = arrayOf(
+                    0f to top,
+                    0.55f to mid,
+                    1f to bot
+                ),
+                startY = 0f,
+                endY = h
             ),
             size = Size(w, h)
         )
 
-        // Soft horizontal "shine" band that slides vertically.
-        val bandY = (0.25f + 0.5f * (0.5f + 0.5f * sin(t * 0.08f))) * h
-        val band = Color.White.copy(alpha = 0.08f)
+        // Soft horizontal "shine" band that slowly drifts vertically.
+        val bandY = (0.25f + 0.5f * (0.5f + 0.5f * sin(t * 0.06f))) * h
+        val band = Color.White.copy(alpha = 0.10f)
         drawRect(
             brush = Brush.verticalGradient(
-                0f to Color.Transparent,
-                0.5f to band,
-                1f to Color.Transparent,
+                colorStops = arrayOf(
+                    0f to Color.Transparent,
+                    0.5f to band,
+                    1f to Color.Transparent
+                ),
                 startY = bandY - 160f,
                 endY = bandY + 160f
             ),
@@ -160,7 +175,7 @@ object ThemeBackground {
             size = Size(w, 320f)
         )
 
-        // Rising bubbles – looped vertically.
+        // Rising bubbles - looped vertically.
         for (b in bubbles) {
             val ry = ((b.startRy - t * b.speed) % 1f + 1f) % 1f
             val x = b.rx * w
@@ -178,97 +193,59 @@ object ThemeBackground {
         }
     }
 
-    // ── RAINBOW ────────────────────────────────────────────────────────────
+    // -- RAINBOW ---------------------------------------------------------------
 
     private fun DrawScope.drawRainbow(
-        w: Float, h: Float, t: Float, phase: Float, reducedMotion: Boolean, vibrancy: Float
+        w: Float, h: Float, t: Float, reducedMotion: Boolean, vibrancy: Float
     ) {
-        // Soft pastel white base.
-        drawRect(color = Color(0xFFFFFDF7), size = Size(w, h))
+        // Hue offset advances continuously - the rainbow flows.
+        val hueShift = if (reducedMotion) 0f else (t * 0.04f) % 1f
 
-        // Diagonal rainbow bands that slowly slide.
-        val offset = if (reducedMotion) 0f else (t * 20f) % (w + h)
-        val baseStops = listOf(
-            Color(0xFFFFC1C1),
-            Color(0xFFFFE0B0),
-            Color(0xFFFFF6A8),
-            Color(0xFFBEEBB4),
-            Color(0xFFB3DBFF),
-            Color(0xFFDAB6FF)
-        )
-        val diag = (w + h)
-        // Rotate hue-phase so the bands slowly cycle colors.
-        val shifted = baseStops.map { c ->
-            hueRotate(c, phase * 360f * 0.25f).scale(vibrancy * 1.05f).copy(alpha = 0.55f)
+        // Build a wide rainbow with many soft stops so the colours segue
+        // smoothly with no hard lines.
+        val stopCount = 12
+        val stops = Array(stopCount) { i ->
+            val frac = i / (stopCount - 1f)
+            val hue = (frac + hueShift) % 1f
+            // Pastel: lower saturation, higher value.
+            val c = hsvToColor(hue, 0.55f, 1f).scale(vibrancy)
+            frac to c
         }
+
+        // Diagonal gradient (top-left to bottom-right) for a more dynamic feel.
+        val diag = w + h
         drawRect(
             brush = Brush.linearGradient(
-                colors = shifted,
-                start = Offset(-offset, -offset),
-                end = Offset(diag - offset, diag - offset)
+                colorStops = stops,
+                start = Offset(0f, 0f),
+                end = Offset(diag, diag)
             ),
+            size = Size(w, h)
+        )
+
+        // Subtle white wash to soften the saturation overall.
+        drawRect(
+            color = Color.White.copy(alpha = 0.10f),
             size = Size(w, h)
         )
     }
 
-    // ── SHAPES ─────────────────────────────────────────────────────────────
+    // -- Color helpers ---------------------------------------------------------
 
-    private fun DrawScope.drawShapes(
-        w: Float, h: Float, t: Float, phase: Float, reducedMotion: Boolean, vibrancy: Float
-    ) {
-        // Cream base.
-        drawRect(color = Color(0xFFFFF6ED), size = Size(w, h))
-
-        // Four large pastel blobs that drift and hue-rotate.
-        val blobColors = listOf(
-            Color(0xFFFFC1D8),
-            Color(0xFFC4F1D1),
-            Color(0xFFC6E0FF),
-            Color(0xFFFFE2A8)
-        )
-        val positions = listOf(
-            Offset(w * (0.25f + 0.1f * sin(t * 0.05f)), h * (0.3f + 0.1f * cos(t * 0.04f))),
-            Offset(w * (0.75f + 0.1f * cos(t * 0.06f)), h * (0.35f + 0.1f * sin(t * 0.05f))),
-            Offset(w * (0.3f + 0.1f * cos(t * 0.04f)), h * (0.72f + 0.1f * sin(t * 0.06f))),
-            Offset(w * (0.78f + 0.1f * sin(t * 0.05f)), h * (0.78f + 0.1f * cos(t * 0.04f)))
-        )
-        for (i in blobColors.indices) {
-            val c = hueRotate(blobColors[i], phase * 360f * 0.5f).scale(vibrancy)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(c.copy(alpha = 0.65f), Color.Transparent),
-                    center = positions[i],
-                    radius = w * 0.55f
-                ),
-                radius = w * 0.55f,
-                center = positions[i]
-            )
-        }
-    }
-
-    // ── Color helpers ──────────────────────────────────────────────────────
-
-    private fun hsvBlend(
-        h: Float, s: Float, v: Float, phase: Float, amount: Float
-    ): Color {
-        // Small hue wobble driven by phase.
-        val hh = ((h + amount * (phase - 0.5f) * 2f) + 1f) % 1f
-        return hsvToColor(hh, s, v)
-    }
-
-    /** Simple HSV → RGB conversion (h in [0,1)). */
+    /** Simple HSV -> RGB conversion (h in [0,1)). */
     private fun hsvToColor(h: Float, s: Float, v: Float): Color {
-        val i = (h * 6f).toInt()
-        val f = h * 6f - i
+        val hh = ((h % 1f) + 1f) % 1f
+        val i = (hh * 6f).toInt()
+        val f = hh * 6f - i
         val p = v * (1f - s)
         val q = v * (1f - f * s)
-        val t = v * (1f - (1f - f) * s)
+        val tt = v * (1f - (1f - f) * s)
         val (r, g, b) = when (i % 6) {
-            0 -> Triple(v, t, p)
+            0 -> Triple(v, tt, p)
             1 -> Triple(q, v, p)
-            2 -> Triple(p, v, t)
+            2 -> Triple(p, v, tt)
             3 -> Triple(p, q, v)
-            4 -> Triple(t, p, v)
+            4 -> Triple(tt, p, v)
             else -> Triple(v, p, q)
         }
         return Color(r.coerceIn(0f, 1f), g.coerceIn(0f, 1f), b.coerceIn(0f, 1f), 1f)
@@ -284,28 +261,7 @@ object ThemeBackground {
         )
     }
 
-    /** Rotate a color's hue by [degrees] (0–360). */
-    private fun hueRotate(color: Color, degrees: Float): Color {
-        val r = color.red
-        val g = color.green
-        val b = color.blue
-        val max = maxOf(r, g, b)
-        val min = minOf(r, g, b)
-        val v = max
-        val d = max - min
-        val s = if (max == 0f) 0f else d / max
-        var h = when {
-            d == 0f -> 0f
-            max == r -> (g - b) / d + (if (g < b) 6f else 0f)
-            max == g -> (b - r) / d + 2f
-            else -> (r - g) / d + 4f
-        } / 6f
-        h = (h + degrees / 360f) % 1f
-        if (h < 0f) h += 1f
-        return hsvToColor(h, s, v).copy(alpha = color.alpha)
-    }
-
-    // ── Deterministic seeds ────────────────────────────────────────────────
+    // -- Deterministic seeds ---------------------------------------------------
 
     private data class StarSeed(
         val rx: Float,

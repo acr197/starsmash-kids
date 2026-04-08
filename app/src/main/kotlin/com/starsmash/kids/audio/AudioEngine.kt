@@ -2,9 +2,9 @@ package com.starsmash.kids.audio
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.SoundPool
+import com.starsmash.kids.settings.MusicTrack
 import com.starsmash.kids.settings.SoundMode
 import com.starsmash.kids.touch.TouchEventType
 import java.io.File
@@ -63,7 +63,7 @@ class AudioEngine(private val context: Context) {
     private val lastPlayTime = mutableMapOf<SoundSynth.Clip, Long>()
 
     private var musicPlayer: MediaPlayer? = null
-    private var musicEnabled: Boolean = true
+    private var musicTrack: MusicTrack = MusicTrack.ARCADE
 
     private var soundMode: SoundMode = SoundMode.PLAYFUL
     private var isGuardActive: Boolean = false
@@ -119,9 +119,28 @@ class AudioEngine(private val context: Context) {
             // back to silence rather than crashing the app.
         }
 
-        // Start background music (async – safe to fail quietly).
+        // Start background music for the current track (async - safe to fail).
+        startMusicForCurrentTrack()
+    }
+
+    private fun startMusicForCurrentTrack() {
+        // Tear down any existing player first.
+        try { musicPlayer?.stop() } catch (_: Throwable) {}
+        try { musicPlayer?.release() } catch (_: Throwable) {}
+        musicPlayer = null
+
+        if (musicTrack == MusicTrack.NONE) return
+
+        val style = when (musicTrack) {
+            MusicTrack.ARCADE -> SoundSynth.MusicStyle.ARCADE
+            MusicTrack.ADVENTURE -> SoundSynth.MusicStyle.ADVENTURE
+            MusicTrack.BUBBLE_POP -> SoundSynth.MusicStyle.BUBBLE_POP
+            MusicTrack.NONE -> return
+        }
         try {
-            val musicFile = SoundSynth.generateMusicLoop(File(context.cacheDir, "ssk_music"))
+            val musicFile = SoundSynth.generateMusicLoop(
+                File(context.cacheDir, "ssk_music"), style
+            )
             val mp = MediaPlayer()
             mp.setAudioAttributes(
                 AudioAttributes.Builder()
@@ -133,7 +152,7 @@ class AudioEngine(private val context: Context) {
             mp.isLooping = true
             mp.setVolume(activeMusicVolume, activeMusicVolume)
             mp.setOnPreparedListener {
-                if (musicEnabled && soundEnabled) {
+                if (soundEnabled && musicTrack != MusicTrack.NONE) {
                     try { it.start() } catch (_: Throwable) {}
                 }
             }
@@ -162,17 +181,16 @@ class AudioEngine(private val context: Context) {
         soundMode = mode
     }
 
-    fun setMusicEnabled(enabled: Boolean) {
-        if (musicEnabled == enabled) return
-        musicEnabled = enabled
-        val mp = musicPlayer ?: return
-        try {
-            if (enabled && soundEnabled) {
-                if (!mp.isPlaying) mp.start()
-            } else {
-                if (mp.isPlaying) mp.pause()
-            }
-        } catch (_: Throwable) {}
+    /**
+     * Change the active music track. If the new track is NONE the music
+     * stops. Otherwise the existing player is torn down and a fresh player
+     * starts on the chosen track's loop.
+     */
+    fun setMusicTrack(track: MusicTrack) {
+        if (musicTrack == track) return
+        musicTrack = track
+        if (!started) return
+        startMusicForCurrentTrack()
     }
 
     fun setGuardActive(active: Boolean) {
@@ -192,7 +210,7 @@ class AudioEngine(private val context: Context) {
     fun refreshSoundEnabled() {
         val mp = musicPlayer ?: return
         try {
-            if (soundEnabled && musicEnabled) {
+            if (soundEnabled && musicTrack != MusicTrack.NONE) {
                 if (!mp.isPlaying) mp.start()
             } else {
                 if (mp.isPlaying) mp.pause()
