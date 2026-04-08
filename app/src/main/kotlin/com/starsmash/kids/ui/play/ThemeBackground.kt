@@ -93,12 +93,14 @@ object ThemeBackground {
             size = Size(w, h)
         )
 
-        // Two soft nebulas drifting along smooth Lissajous paths.
-        val driftA = 0.04f
-        val cx1 = w * (0.35f + 0.15f * sin(t * driftA))
-        val cy1 = h * (0.40f + 0.12f * cos(t * driftA * 0.8f))
+        // Three nebulas moving along large orbital paths so it never feels
+        // static. Much more travel than before (0.35w amplitude) so the eye
+        // can actually see them drifting.
+        val driftA = 0.09f
+        val cx1 = w * (0.5f + 0.35f * sin(t * driftA))
+        val cy1 = h * (0.5f + 0.22f * cos(t * driftA * 0.7f))
         val nebulaHueA = (0.78f + 0.04f * sin(t * 0.02f)) % 1f
-        val nebula1 = hsvToColor(nebulaHueA, 0.55f, 0.6f).copy(alpha = 0.32f).scale(vibrancy)
+        val nebula1 = hsvToColor(nebulaHueA, 0.60f, 0.6f).copy(alpha = 0.32f).scale(vibrancy)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(nebula1, Color.Transparent),
@@ -109,10 +111,10 @@ object ThemeBackground {
             center = Offset(cx1, cy1)
         )
 
-        val cx2 = w * (0.70f + 0.15f * cos(t * driftA * 0.9f))
-        val cy2 = h * (0.65f + 0.12f * sin(t * driftA * 1.1f))
+        val cx2 = w * (0.5f + 0.38f * cos(t * driftA * 0.6f + 1.5f))
+        val cy2 = h * (0.5f + 0.28f * sin(t * driftA * 0.85f + 1.5f))
         val nebulaHueB = (0.92f + 0.04f * cos(t * 0.025f) + 1f) % 1f
-        val nebula2 = hsvToColor(nebulaHueB, 0.55f, 0.55f).copy(alpha = 0.28f).scale(vibrancy)
+        val nebula2 = hsvToColor(nebulaHueB, 0.60f, 0.55f).copy(alpha = 0.28f).scale(vibrancy)
         drawCircle(
             brush = Brush.radialGradient(
                 colors = listOf(nebula2, Color.Transparent),
@@ -123,8 +125,33 @@ object ThemeBackground {
             center = Offset(cx2, cy2)
         )
 
-        // Stars - deterministic positions, slow continuous twinkle.
+        val cx3 = w * (0.5f + 0.30f * sin(t * driftA * 0.5f + 3.0f))
+        val cy3 = h * (0.5f + 0.30f * cos(t * driftA * 0.9f + 3.0f))
+        val nebulaHueC = (0.62f + 0.05f * sin(t * 0.018f) + 1f) % 1f
+        val nebula3 = hsvToColor(nebulaHueC, 0.55f, 0.50f).copy(alpha = 0.22f).scale(vibrancy)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(nebula3, Color.Transparent),
+                center = Offset(cx3, cy3),
+                radius = w * 0.70f
+            ),
+            radius = w * 0.70f,
+            center = Offset(cx3, cy3)
+        )
+
+        // Stars - positions drift slowly around the center so the whole
+        // starfield appears to rotate. Period ~ 2 minutes at 1x speed.
+        val rotation = if (reducedMotion) 0f else t * 0.015f
+        val cosR = cos(rotation)
+        val sinR = sin(rotation)
+        val cw = w * 0.5f
+        val ch = h * 0.5f
         for (s in stars) {
+            // Translate star position relative to center, rotate, translate back.
+            val sx = s.rx * w - cw
+            val sy = s.ry * h - ch
+            val rx = cw + sx * cosR - sy * sinR
+            val ry = ch + sx * sinR + sy * cosR
             val twinkle =
                 if (reducedMotion) 1f
                 else 0.5f + 0.5f * sin(t * s.twinkleSpeed + s.twinklePhase)
@@ -132,7 +159,7 @@ object ThemeBackground {
             drawCircle(
                 color = color,
                 radius = s.radius,
-                center = Offset(s.rx * w, s.ry * h)
+                center = Offset(rx, ry)
             )
         }
     }

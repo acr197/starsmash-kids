@@ -193,6 +193,25 @@ class AudioEngine(private val context: Context) {
         startMusicForCurrentTrack()
     }
 
+    /**
+     * Adjust the playback rate of the background music. Used to speed up
+     * the tempo as gameplay progresses. Values are clamped to a safe range
+     * so the music never becomes comical.
+     *
+     * Note: setPlaybackParams requires API 23+. We wrap in try/catch so older
+     * devices (which we support down to minSdk 26 anyway) still work.
+     */
+    fun setMusicSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.85f, 1.45f)
+        val mp = musicPlayer ?: return
+        try {
+            val params = mp.playbackParams.setSpeed(clamped)
+            mp.playbackParams = params
+        } catch (_: Throwable) {
+            // Older Android / unsupported codec - silently ignore.
+        }
+    }
+
     fun setGuardActive(active: Boolean) {
         if (isGuardActive == active) return
         isGuardActive = active
@@ -243,14 +262,20 @@ class AudioEngine(private val context: Context) {
     private fun chooseClip(eventType: TouchEventType): SoundSynth.Clip? {
         val playful = soundMode == SoundMode.PLAYFUL
         return when (eventType) {
-            is TouchEventType.SingleTap,
-            is TouchEventType.SingleDrag -> {
+            is TouchEventType.SingleTap -> {
                 val bank = if (playful) PLAYFUL_TAPS else CALM_TAPS
+                nonRepeating(bank)
+            }
+            is TouchEventType.SingleDrag -> {
+                // Drags fire rapidly, so CALM drags use the ultra-quiet
+                // HUSH bank (barely-there whispered ticks) instead of the
+                // full calm-tap bank. Playful stays energetic.
+                val bank = if (playful) PLAYFUL_TAPS else CALM_DRAGS
                 nonRepeating(bank)
             }
             is TouchEventType.TwoFingerTap,
             is TouchEventType.TwoFingerDrag -> {
-                if (playful) SoundSynth.Clip.BOING else SoundSynth.Clip.WATER_DROP
+                if (playful) SoundSynth.Clip.BOING else SoundSynth.Clip.WOOD_TAP
             }
             is TouchEventType.MultiTouchBurst -> {
                 if (playful) SoundSynth.Clip.SPARKLE_UP else SoundSynth.Clip.CHIME_SOFT
@@ -259,7 +284,7 @@ class AudioEngine(private val context: Context) {
                 if (playful) SoundSynth.Clip.SOFT_BOOM else SoundSynth.Clip.BREEZE
             }
             is TouchEventType.RapidTapCluster -> {
-                if (playful) SoundSynth.Clip.COIN_DING else SoundSynth.Clip.GLASS_PING
+                if (playful) SoundSynth.Clip.COIN_DING else SoundSynth.Clip.CHIME_SOFT
             }
             is TouchEventType.EdgeEntrySwipe -> null // silent – don't reward edge gestures
         }
@@ -306,5 +331,12 @@ class AudioEngine(private val context: Context) {
         SoundSynth.Clip.WATER_DROP,
         SoundSynth.Clip.WOOD_TAP,
         SoundSynth.Clip.GLASS_PING
+    )
+
+    // CALM-mode drag sounds: ultra-quiet hushed ticks only. Drags fire rapidly,
+    // so these need to be barely audible per-event to feel soothing.
+    private val CALM_DRAGS = listOf(
+        SoundSynth.Clip.HUSH_LOW,
+        SoundSynth.Clip.HUSH_MID
     )
 }

@@ -42,6 +42,19 @@ enum class TrailLength { SHORT, MEDIUM, LONG }
 enum class MusicTrack { NONE, ARCADE, ADVENTURE, BUBBLE_POP }
 
 /**
+ * How fast the game should start. Later difficulty still ramps over time,
+ * but this picks the starting point so impatient kids don't have to wait
+ * through a slow build-up.
+ */
+enum class StartingDifficulty { GENTLE, MEDIUM, FAST }
+
+/**
+ * Which kinds of objects the child can smash. User picks any combination;
+ * if they pick none, we fall back to EMOJI so the game is never empty.
+ */
+enum class SmashCategory { SHAPES, EMOJI, DINOSAURS, TRUCKS, ANIMALS, TOYS, FOOD, SPACE }
+
+/**
  * Immutable snapshot of all user-facing settings.
  *
  * All fields have safe defaults that produce a pleasant out-of-the-box experience.
@@ -56,9 +69,13 @@ data class AppSettings(
     val effectsIntensity: EffectsIntensity = EffectsIntensity.MEDIUM,
     val trailLength: TrailLength = TrailLength.MEDIUM,
     val playTheme: PlayTheme = PlayTheme.SPACE,
+    val startingDifficulty: StartingDifficulty = StartingDifficulty.GENTLE,
+    val smashCategories: Set<SmashCategory> = setOf(
+        SmashCategory.EMOJI, SmashCategory.DINOSAURS, SmashCategory.TRUCKS,
+        SmashCategory.ANIMALS, SmashCategory.TOYS
+    ),
     val keepScreenAwake: Boolean = true,
     val reducedMotion: Boolean = false,
-    val fullEmojiMode: Boolean = true,
     val idleDemo: Boolean = false,
     val adaptivePlayEnabled: Boolean = true,
     val overstimulationGuardEnabled: Boolean = true,
@@ -75,9 +92,10 @@ data class AppSettings(
         private const val KEY_EFFECTS_INTENSITY = "effects_intensity"
         private const val KEY_TRAIL_LENGTH = "trail_length"
         private const val KEY_PLAY_THEME = "play_theme"
+        private const val KEY_STARTING_DIFFICULTY = "starting_difficulty"
+        private const val KEY_SMASH_CATEGORIES = "smash_categories_csv"
         private const val KEY_KEEP_SCREEN_AWAKE = "keep_screen_awake"
         private const val KEY_REDUCED_MOTION = "reduced_motion"
-        private const val KEY_FULL_EMOJI_MODE = "full_emoji_mode"
         private const val KEY_IDLE_DEMO = "idle_demo"
         private const val KEY_ADAPTIVE_PLAY = "adaptive_play_enabled"
         private const val KEY_OVERSTIM_GUARD = "overstimulation_guard_enabled"
@@ -91,6 +109,19 @@ data class AppSettings(
             val themeName = prefs.getString(KEY_PLAY_THEME, PlayTheme.SPACE.name) ?: PlayTheme.SPACE.name
             val theme = runCatching { PlayTheme.valueOf(themeName) }
                 .getOrDefault(PlayTheme.RAINBOW)
+            val categoriesCsv = prefs.getString(KEY_SMASH_CATEGORIES, null)
+            val categories: Set<SmashCategory> = if (categoriesCsv.isNullOrBlank()) {
+                setOf(
+                    SmashCategory.EMOJI, SmashCategory.DINOSAURS, SmashCategory.TRUCKS,
+                    SmashCategory.ANIMALS, SmashCategory.TOYS
+                )
+            } else {
+                categoriesCsv.split(',')
+                    .mapNotNull { name ->
+                        runCatching { SmashCategory.valueOf(name.trim()) }.getOrNull()
+                    }
+                    .toSet()
+            }
             return AppSettings(
                 soundEnabled = prefs.getBoolean(KEY_SOUND_ENABLED, true),
                 soundMode = SoundMode.valueOf(
@@ -107,9 +138,14 @@ data class AppSettings(
                     TrailLength.valueOf(prefs.getString(KEY_TRAIL_LENGTH, TrailLength.MEDIUM.name)!!)
                 }.getOrDefault(TrailLength.MEDIUM),
                 playTheme = theme,
+                startingDifficulty = runCatching {
+                    StartingDifficulty.valueOf(
+                        prefs.getString(KEY_STARTING_DIFFICULTY, StartingDifficulty.GENTLE.name)!!
+                    )
+                }.getOrDefault(StartingDifficulty.GENTLE),
+                smashCategories = categories,
                 keepScreenAwake = prefs.getBoolean(KEY_KEEP_SCREEN_AWAKE, true),
                 reducedMotion = prefs.getBoolean(KEY_REDUCED_MOTION, false),
-                fullEmojiMode = prefs.getBoolean(KEY_FULL_EMOJI_MODE, true),
                 idleDemo = prefs.getBoolean(KEY_IDLE_DEMO, false),
                 adaptivePlayEnabled = prefs.getBoolean(KEY_ADAPTIVE_PLAY, true),
                 overstimulationGuardEnabled = prefs.getBoolean(KEY_OVERSTIM_GUARD, true),
@@ -128,9 +164,13 @@ data class AppSettings(
                 .putString(KEY_EFFECTS_INTENSITY, settings.effectsIntensity.name)
                 .putString(KEY_TRAIL_LENGTH, settings.trailLength.name)
                 .putString(KEY_PLAY_THEME, settings.playTheme.name)
+                .putString(KEY_STARTING_DIFFICULTY, settings.startingDifficulty.name)
+                .putString(
+                    KEY_SMASH_CATEGORIES,
+                    settings.smashCategories.joinToString(",") { it.name }
+                )
                 .putBoolean(KEY_KEEP_SCREEN_AWAKE, settings.keepScreenAwake)
                 .putBoolean(KEY_REDUCED_MOTION, settings.reducedMotion)
-                .putBoolean(KEY_FULL_EMOJI_MODE, settings.fullEmojiMode)
                 .putBoolean(KEY_IDLE_DEMO, settings.idleDemo)
                 .putBoolean(KEY_ADAPTIVE_PLAY, settings.adaptivePlayEnabled)
                 .putBoolean(KEY_OVERSTIM_GUARD, settings.overstimulationGuardEnabled)
