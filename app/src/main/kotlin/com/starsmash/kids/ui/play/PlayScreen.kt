@@ -35,6 +35,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.starsmash.kids.MainActivity
 import com.starsmash.kids.settings.EffectsIntensity
 import com.starsmash.kids.settings.HighScoreStore
 import com.starsmash.kids.settings.PlayTheme
@@ -78,7 +79,22 @@ private data class FloatingTarget(
     val emoji: String,
     var spin: Float,
     val spinSpeed: Float,
-    var dirChangeTimer: Float
+    var dirChangeTimer: Float,
+    // Sinusoidal wobble parameters (targets spawned at 50-99 stars)
+    val wobbleAmplitude: Float = 0f,
+    val wobbleFrequency: Float = 0f,
+    var wobblePhase: Float = 0f,
+    // Bezier curve parameters (targets spawned at 100+ stars)
+    val bezierP0x: Float = 0f,
+    val bezierP0y: Float = 0f,
+    val bezierP1x: Float = 0f,
+    val bezierP1y: Float = 0f,
+    val bezierP2x: Float = 0f,
+    val bezierP2y: Float = 0f,
+    val bezierP3x: Float = 0f,
+    val bezierP3y: Float = 0f,
+    var bezierT: Float = 0f,
+    var bezierDuration: Float = 0f
 )
 
 // Categorised emoji pools. The child's selected set of [SmashCategory] is
@@ -151,6 +167,17 @@ fun PlayScreen(
     var showExitDialog by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Toddler lock: suppress volume keys and start screen pinning during gameplay.
+    val activity = context as? MainActivity
+    DisposableEffect(activity) {
+        activity?.isInPlayMode = true
+        activity?.startScreenPinning()
+        onDispose {
+            activity?.isInPlayMode = false
+            activity?.stopScreenPinning()
+        }
+    }
 
     BackHandler {
         backPressCount += 1
@@ -271,14 +298,13 @@ fun PlayScreen(
 
             val elapsedSec = (currentFrameTime - firstFrameTime) / 1000f
             elapsedSecState = elapsedSec
-            // Difficulty ramps from the picked floor up to 8.0 over ~5 minutes.
-            // This gives roughly 5× peak speed vs the old 1.6 cap.
-            val difficulty = (difficultyStart + elapsedSec / 40f).coerceAtMost(8.0f)
 
-            // Music tempo ramps from 1.0x to 2.0x proportionally with the
-            // difficulty ramp so audio intensity matches visual speed.
-            val difficultyProgress = ((difficulty - difficultyStart) / (8.0f - difficultyStart)).coerceIn(0f, 1f)
-            val targetMusicSpeed = (1.0f + difficultyProgress).coerceIn(1.0f, 2.0f)
+            // Speed multiplier driven by star count (score).
+            // 0-49 stars = 1x, 50-99 = 2x, 100-149 = 3x, 150+ = 4x.
+            val speedMultiplier = (score / 50 + 1).coerceAtMost(4)
+
+            // Music playback speed follows the same multiplier, hard-capped at 3x.
+            val targetMusicSpeed = speedMultiplier.coerceAtMost(3).toFloat()
             if (kotlin.math.abs(targetMusicSpeed - lastMusicSpeed) > 0.01f) {
                 viewModel.setMusicSpeed(targetMusicSpeed)
                 lastMusicSpeed = targetMusicSpeed
@@ -293,51 +319,132 @@ fun PlayScreen(
                 effects[i] = e.copy(age = (e.age + deltaMs / e.maxAge).coerceAtMost(1f))
             }
 
-            // Move floating targets.
-            val speedMul = 0.05f * difficulty
+            // Move floating targets. Speed driven by star-count multiplier.
+            val speedMul = 0.05f * speedMultiplier
             val tsize = targets.size
             for (i in 0 until tsize) {
                 if (i >= targets.size) break
                 val t = targets[i]
-                var nx = t.x + t.vx * deltaMs * speedMul
-                var ny = t.y + t.vy * deltaMs * speedMul
                 t.spin += t.spinSpeed * deltaMs * 0.001f
 
-                // After 60 s, targets occasionally change direction.
-                if (elapsedSec > 60f) {
-                    t.dirChangeTimer -= deltaMs
-                    if (t.dirChangeTimer <= 0f) {
-                        val speed = hypot(t.vx.toDouble(), t.vy.toDouble()).toFloat()
-                        val newAngle = rng.nextFloat() * 2f * PI.toFloat()
-                        t.vx = cos(newAngle) * speed
-                        t.vy = sin(newAngle) * speed
-                        t.dirChangeTimer = rng.nextFloat() * 4000f + 2000f
+                if (t.bezierDuration > 0f) {
+                    // ── Bezier curve movement (spawned at 100+ stars) ──
+                    t.bezierT += (deltaMs / t.bezierDuration) * speedMultiplier
+                    if (t.bezierT >= 1f) {
+                        targets.removeAt(i)
+                        break
+                    }
+                    val bt = t.bezierT
+                    val u = 1f - bt
+                    t.x = u*u*u*t.bezierP0x + 3*u*u*bt*t.bezierP1x + 3*u*bt*bt*t.bezierP2x + bt*bt*bt*t.bezierP3x
+                    t.y = u*u*u*t.bezierP0y + 3*u*u*bt*t.bezierP1y + 3*u*bt*bt*t.bezierP2y + bt*bt*bt*t.bezierP3y
+                } else {
+                    // ── Straight-line or wobble movement ──
+                    var nx = t.x + t.vx * deltaMs * speedMul
+                    var ny = t.y + t.vy * deltaMs * speedMul
+
+                    // Sinusoidal wobble perpendicular to travel (spawned at 50-99 stars)
+                    if (t.wobbleAmplitude > 0f) {
+                        val spd = hypot(t.vx.toDouble(), t.vy.toDouble()).toFloat()
+                        if (spd > 0.001f) {
+                            val perpX = -t.vy / spd
+                            val perpY = t.vx / spd
+                            val prevPhase = t.wobblePhase
+                            t.wobblePhase += deltaMs * 0.001f * t.wobbleFrequency
+                            val deltaWobble = t.wobbleAmplitude * (sin(t.wobblePhase) - sin(prevPhase))
+                            nx += perpX * deltaWobble
+                            ny += perpY * deltaWobble
+                        }
+                    }
+
+                    // Occasional direction changes for straight-line targets only
+                    if (t.wobbleAmplitude == 0f && elapsedSec > 60f) {
+                        t.dirChangeTimer -= deltaMs
+                        if (t.dirChangeTimer <= 0f) {
+                            val spd = hypot(t.vx.toDouble(), t.vy.toDouble()).toFloat()
+                            val newAngle = rng.nextFloat() * 2f * PI.toFloat()
+                            t.vx = cos(newAngle) * spd
+                            t.vy = sin(newAngle) * spd
+                            t.dirChangeTimer = rng.nextFloat() * 4000f + 2000f
+                        }
+                    }
+
+                    // Remove if fully off-screen.
+                    if (nx < -t.radius * 3f || nx > width + t.radius * 3f ||
+                        ny < -t.radius * 3f || ny > height + t.radius * 3f
+                    ) {
+                        targets.removeAt(i)
+                        break
+                    } else {
+                        t.x = nx
+                        t.y = ny
                     }
                 }
+            }
 
-                // Remove target if it fully exits the screen.
-                if (nx < -t.radius * 3f || nx > width + t.radius * 3f ||
-                    ny < -t.radius * 3f || ny > height + t.radius * 3f
-                ) {
-                    targets.removeAt(i)
-                    // After removal indices shift; the outer loop will handle it
-                    // safely because we guard with `if (i >= targets.size) break`.
-                    break
-                } else {
-                    t.x = nx
-                    t.y = ny
+            // Shape-on-shape collision: only when SHAPES category is selected
+            // AND star count is 150+. Shapes bounce off each other elastically.
+            // No collision for animals, trucks, toys, or any non-shape category.
+            if (currentShapesAllowed && score >= 150) {
+                for (i in 0 until targets.size) {
+                    val a = targets[i]
+                    if (a.kind == TargetKind.EMOJI) continue
+                    for (j in i + 1 until targets.size) {
+                        val b = targets[j]
+                        if (b.kind == TargetKind.EMOJI) continue
+                        val cdx = b.x - a.x
+                        val cdy = b.y - a.y
+                        val dist = hypot(cdx.toDouble(), cdy.toDouble()).toFloat()
+                        val minDist = a.radius + b.radius
+                        if (dist < minDist && dist > 0.001f) {
+                            val cnx = cdx / dist
+                            val cny = cdy / dist
+                            // If on bezier, convert to straight-line with tangent velocity
+                            if (a.bezierDuration > 0f) {
+                                val bt = a.bezierT; val au = 1f - bt
+                                val tx = 3*au*au*(a.bezierP1x-a.bezierP0x) + 6*au*bt*(a.bezierP2x-a.bezierP1x) + 3*bt*bt*(a.bezierP3x-a.bezierP2x)
+                                val ty = 3*au*au*(a.bezierP1y-a.bezierP0y) + 6*au*bt*(a.bezierP2y-a.bezierP1y) + 3*bt*bt*(a.bezierP3y-a.bezierP2y)
+                                val tLen = hypot(tx.toDouble(), ty.toDouble()).toFloat().coerceAtLeast(0.001f)
+                                a.vx = tx / tLen * 1.5f; a.vy = ty / tLen * 1.5f
+                                a.bezierDuration = 0f
+                            }
+                            if (b.bezierDuration > 0f) {
+                                val bt = b.bezierT; val bu = 1f - bt
+                                val tx = 3*bu*bu*(b.bezierP1x-b.bezierP0x) + 6*bu*bt*(b.bezierP2x-b.bezierP1x) + 3*bt*bt*(b.bezierP3x-b.bezierP2x)
+                                val ty = 3*bu*bu*(b.bezierP1y-b.bezierP0y) + 6*bu*bt*(b.bezierP2y-b.bezierP1y) + 3*bt*bt*(b.bezierP3y-b.bezierP2y)
+                                val tLen = hypot(tx.toDouble(), ty.toDouble()).toFloat().coerceAtLeast(0.001f)
+                                b.vx = tx / tLen * 1.5f; b.vy = ty / tLen * 1.5f
+                                b.bezierDuration = 0f
+                            }
+                            // Elastic collision response along collision normal
+                            val relVelDotN = (b.vx - a.vx) * cnx + (b.vy - a.vy) * cny
+                            if (relVelDotN < 0f) {
+                                a.vx -= relVelDotN * cnx
+                                a.vy -= relVelDotN * cny
+                                b.vx += relVelDotN * cnx
+                                b.vy += relVelDotN * cny
+                            }
+                            // Separate overlapping shapes
+                            val overlap = minDist - dist
+                            a.x -= cnx * overlap * 0.5f
+                            a.y -= cny * overlap * 0.5f
+                            b.x += cnx * overlap * 0.5f
+                            b.y += cny * overlap * 0.5f
+                        }
+                    }
                 }
             }
 
             // Spawn targets from edges after the configured start delay.
             if (elapsedSec >= startDelaySec) {
-                val desiredCount = (3 + (difficulty.coerceAtMost(2.5f) * 5).toInt()).coerceIn(3, 15)
+                val desiredCount = (3 + speedMultiplier * 3).coerceIn(3, 15)
                 if (targets.size < desiredCount) {
                     targets.add(
                         spawnFromEdge(
                             nextTargetId++, width, height,
-                            currentThemeColors, difficulty,
-                            currentEmojiPool, currentShapesAllowed, rng
+                            currentThemeColors,
+                            currentEmojiPool, currentShapesAllowed,
+                            score, rng
                         )
                     )
                 }
@@ -681,14 +788,14 @@ private fun spawnFromEdge(
     width: Float,
     height: Float,
     colors: List<Color>,
-    difficulty: Float,
     emojiPool: List<String>,
     shapesAllowed: Boolean,
+    starCount: Int,
     rng: Random
 ): FloatingTarget {
     val radius = 32f + rng.nextFloat() * 28f
     val baseSpeed = 0.8f + rng.nextFloat() * 1.4f
-    val speed = baseSpeed * difficulty.coerceIn(0.5f, 1.6f)
+    val speed = baseSpeed // speedMultiplier is applied per-frame in the animation loop
 
     // Pick a random edge: 0=left, 1=right, 2=top, 3=bottom.
     val edge = rng.nextInt(4)
@@ -725,20 +832,55 @@ private fun spawnFromEdge(
         TargetKind.EMOJI
     }
 
-    return FloatingTarget(
-        id = id,
-        x = startX,
-        y = startY,
-        vx = cos(angle) * speed,
-        vy = sin(angle) * speed,
-        radius = radius,
-        color = color,
-        kind = kind,
-        emoji = emoji,
-        spin = rng.nextFloat() * 2f * PI.toFloat(),
-        spinSpeed = (rng.nextFloat() - 0.5f) * 2f,
-        dirChangeTimer = rng.nextFloat() * 4000f + 2000f
-    )
+    val vx = cos(angle) * speed
+    val vy = sin(angle) * speed
+    val spinStart = rng.nextFloat() * 2f * PI.toFloat()
+    val spinSpd = (rng.nextFloat() - 0.5f) * 2f
+    val dirTimer = rng.nextFloat() * 4000f + 2000f
+
+    // Movement pattern based on current star count at spawn time.
+    return if (starCount >= 100) {
+        // Bezier curve: smooth arc from entry edge across the screen.
+        val endEdge = (edge + 1 + rng.nextInt(2)) % 4
+        val (endX, endY) = when (endEdge) {
+            0 -> Pair(-radius * 2f, rng.nextFloat() * height)
+            1 -> Pair(width + radius * 2f, rng.nextFloat() * height)
+            2 -> Pair(rng.nextFloat() * width, -radius * 2f)
+            else -> Pair(rng.nextFloat() * width, height + radius * 2f)
+        }
+        val cp1x = width * (0.15f + rng.nextFloat() * 0.7f)
+        val cp1y = height * (0.15f + rng.nextFloat() * 0.7f)
+        val cp2x = width * (0.15f + rng.nextFloat() * 0.7f)
+        val cp2y = height * (0.15f + rng.nextFloat() * 0.7f)
+        val duration = 4000f + rng.nextFloat() * 4000f
+        FloatingTarget(
+            id = id, x = startX, y = startY, vx = vx, vy = vy,
+            radius = radius, color = color, kind = kind, emoji = emoji,
+            spin = spinStart, spinSpeed = spinSpd, dirChangeTimer = dirTimer,
+            bezierP0x = startX, bezierP0y = startY,
+            bezierP1x = cp1x, bezierP1y = cp1y,
+            bezierP2x = cp2x, bezierP2y = cp2y,
+            bezierP3x = endX, bezierP3y = endY,
+            bezierT = 0f, bezierDuration = duration
+        )
+    } else if (starCount >= 50) {
+        // Sinusoidal wobble added to straight-line path.
+        FloatingTarget(
+            id = id, x = startX, y = startY, vx = vx, vy = vy,
+            radius = radius, color = color, kind = kind, emoji = emoji,
+            spin = spinStart, spinSpeed = spinSpd, dirChangeTimer = dirTimer,
+            wobbleAmplitude = 30f + rng.nextFloat() * 40f,
+            wobbleFrequency = 4f + rng.nextFloat() * 6f,
+            wobblePhase = rng.nextFloat() * 2f * PI.toFloat()
+        )
+    } else {
+        // Straight-line movement (0-49 stars).
+        FloatingTarget(
+            id = id, x = startX, y = startY, vx = vx, vy = vy,
+            radius = radius, color = color, kind = kind, emoji = emoji,
+            spin = spinStart, spinSpeed = spinSpd, dirChangeTimer = dirTimer
+        )
+    }
 }
 
 // ── Effect spawning ───────────────────────────────────────────────────────────

@@ -3,6 +3,8 @@ package com.starsmash.kids.audio
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.SoundPool
 import com.starsmash.kids.settings.MusicTrack
 import com.starsmash.kids.settings.SoundMode
@@ -73,6 +75,40 @@ class AudioEngine(private val context: Context) {
     var soundEnabled: Boolean = true
     private var started: Boolean = false
 
+    // Audio focus management – ensures music stops when the app loses focus
+    // (e.g. user switches apps, screen locks, another app plays audio).
+    private var audioManager: AudioManager? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var hasAudioFocus: Boolean = false
+    private var pausedByFocusLoss: Boolean = false
+
+    private val focusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                hasAudioFocus = true
+                if (pausedByFocusLoss) {
+                    pausedByFocusLoss = false
+                    try {
+                        val mp = musicPlayer ?: return@OnAudioFocusChangeListener
+                        if (soundEnabled && musicTrack != MusicTrack.NONE && !mp.isPlaying) {
+                            mp.start()
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                hasAudioFocus = false
+                pausedByFocusLoss = true
+                try {
+                    val mp = musicPlayer ?: return@OnAudioFocusChangeListener
+                    if (mp.isPlaying) mp.pause()
+                } catch (_: Throwable) {}
+            }
+        }
+    }
+
     // Remember the last clip used in each category so we don't repeat.
     private var lastTapClip: SoundSynth.Clip? = null
 
@@ -87,6 +123,9 @@ class AudioEngine(private val context: Context) {
     fun start() {
         if (started) return
         started = true
+
+        audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        requestAudioFocus()
 
         val attributes = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_GAME)
@@ -165,6 +204,7 @@ class AudioEngine(private val context: Context) {
 
     fun stop() {
         started = false
+        abandonAudioFocus()
         try { musicPlayer?.stop() } catch (_: Throwable) {}
         try { musicPlayer?.release() } catch (_: Throwable) {}
         musicPlayer = null
@@ -184,6 +224,7 @@ class AudioEngine(private val context: Context) {
             val mp = musicPlayer ?: return
             if (mp.isPlaying) mp.pause()
         } catch (_: Throwable) {}
+        abandonAudioFocus()
     }
 
     /**
@@ -191,6 +232,8 @@ class AudioEngine(private val context: Context) {
      * still enabled and a music track is selected.
      */
     fun resumeMusic() {
+        requestAudioFocus()
+        if (!hasAudioFocus) return
         try {
             val mp = musicPlayer ?: return
             if (soundEnabled && musicTrack != MusicTrack.NONE && !mp.isPlaying) {
@@ -226,7 +269,7 @@ class AudioEngine(private val context: Context) {
      * devices (which we support down to minSdk 26 anyway) still work.
      */
     fun setMusicSpeed(speed: Float) {
-        val clamped = speed.coerceIn(0.85f, 2.0f)
+        val clamped = speed.coerceIn(0.85f, 3.0f)
         val mp = musicPlayer ?: return
         try {
             val params = mp.playbackParams.setSpeed(clamped)
@@ -259,6 +302,36 @@ class AudioEngine(private val context: Context) {
                 if (mp.isPlaying) mp.pause()
             }
         } catch (_: Throwable) {}
+    }
+
+    // ── Audio Focus ───────────────────────────────────────────────────────
+
+    /**
+     * Request audio focus so the system knows we're actively playing audio.
+     * Other apps that respect audio focus will duck or pause when we hold it.
+     */
+    fun requestAudioFocus() {
+        val am = audioManager ?: return
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener(focusChangeListener)
+            .build()
+        audioFocusRequest = request
+        hasAudioFocus = am.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    /**
+     * Release audio focus when the app goes to background or audio stops.
+     */
+    fun abandonAudioFocus() {
+        val am = audioManager ?: return
+        audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+        hasAudioFocus = false
     }
 
     // ── Playback ──────────────────────────────────────────────────────────
