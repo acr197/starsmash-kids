@@ -74,6 +74,10 @@ data class AppSettings(
     val soundMode: SoundMode = SoundMode.PLAYFUL,
     val trailSoundEnabled: Boolean = true,
     val musicTrack: MusicTrack = MusicTrack.TRACK_01,
+    /** Background music volume, 0.0–1.0. Default matches original hardcoded level. */
+    val musicVolume: Float = 0.22f,
+    /** Sound effects volume, 0.0–1.0. Default matches original hardcoded level. */
+    val sfxVolume: Float = 0.9f,
     val effectsIntensity: EffectsIntensity = EffectsIntensity.MEDIUM,
     val trailLength: TrailLength = TrailLength.MEDIUM,
     val playTheme: PlayTheme = PlayTheme.SPACE,
@@ -97,6 +101,8 @@ data class AppSettings(
         private const val KEY_SOUND_MODE = "sound_mode"
         private const val KEY_TRAIL_SOUND = "trail_sound_enabled"
         private const val KEY_MUSIC_TRACK = "music_track"
+        private const val KEY_MUSIC_VOLUME = "music_volume"
+        private const val KEY_SFX_VOLUME = "sfx_volume"
         private const val KEY_EFFECTS_INTENSITY = "effects_intensity"
         private const val KEY_TRAIL_LENGTH = "trail_length"
         private const val KEY_PLAY_THEME = "play_theme"
@@ -139,6 +145,8 @@ data class AppSettings(
                 musicTrack = runCatching {
                     MusicTrack.valueOf(prefs.getString(KEY_MUSIC_TRACK, MusicTrack.TRACK_01.name)!!)
                 }.getOrDefault(MusicTrack.TRACK_01),
+                musicVolume = prefs.getFloat(KEY_MUSIC_VOLUME, 0.22f).coerceIn(0f, 1f),
+                sfxVolume = prefs.getFloat(KEY_SFX_VOLUME, 0.9f).coerceIn(0f, 1f),
                 effectsIntensity = EffectsIntensity.valueOf(
                     prefs.getString(KEY_EFFECTS_INTENSITY, EffectsIntensity.MEDIUM.name)!!
                 ),
@@ -169,6 +177,8 @@ data class AppSettings(
                 .putString(KEY_SOUND_MODE, settings.soundMode.name)
                 .putBoolean(KEY_TRAIL_SOUND, settings.trailSoundEnabled)
                 .putString(KEY_MUSIC_TRACK, settings.musicTrack.name)
+                .putFloat(KEY_MUSIC_VOLUME, settings.musicVolume)
+                .putFloat(KEY_SFX_VOLUME, settings.sfxVolume)
                 .putString(KEY_EFFECTS_INTENSITY, settings.effectsIntensity.name)
                 .putString(KEY_TRAIL_LENGTH, settings.trailLength.name)
                 .putString(KEY_PLAY_THEME, settings.playTheme.name)

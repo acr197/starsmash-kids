@@ -45,6 +45,7 @@ import com.starsmash.kids.settings.SoundMode
 import com.starsmash.kids.settings.StartingDifficulty
 import com.starsmash.kids.settings.TrailLength
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -116,6 +117,19 @@ fun HomeScreen(
                     MusicTrackCycler(
                         currentTrack = settings.musicTrack,
                         onCycle = viewModel::cycleMusicTrack
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    VolumeSlider(
+                        label = "Music Volume",
+                        info = "Controls how loud the background music is. Does not affect sound effects.",
+                        value = settings.musicVolume,
+                        onValueChange = viewModel::setMusicVolume
+                    )
+                    VolumeSlider(
+                        label = "Effects Volume",
+                        info = "Controls how loud taps, pops, and reward sounds are. Does not affect music.",
+                        value = settings.sfxVolume,
+                        onValueChange = viewModel::setSfxVolume
                     )
                 }
             }
@@ -711,6 +725,50 @@ private fun ChoiceButton(
                 maxLines = 2
             )
         }
+    }
+}
+
+// ── Volume slider ──────────────────────────────────────────────────────────
+
+/**
+ * A labelled slider controlling a volume in [0, 1]. Shows the current level
+ * as a percentage next to the label. Independent for music and SFX.
+ */
+@Composable
+private fun VolumeSlider(
+    label: String,
+    info: String,
+    value: Float,
+    onValueChange: (Float) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 2.dp)
+        ) {
+            InfoIcon(info = info, label = label)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${(value * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = 0f..1f,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp)
+        )
     }
 }
 

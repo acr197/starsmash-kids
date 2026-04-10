@@ -54,6 +54,8 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
         audioEngine.soundEnabled = settings.soundEnabled
         audioEngine.setSoundMode(settings.soundMode)
         audioEngine.setMusicTrack(settings.musicTrack)
+        audioEngine.setMusicVolume(settings.musicVolume)
+        audioEngine.setSfxVolume(settings.sfxVolume)
 
         // AudioEngine.start() does file I/O (synthesising WAVs into cacheDir
         // on first launch) so push it onto a background dispatcher. All
@@ -126,6 +128,8 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
             audioEngine.soundEnabled = settings.soundEnabled
             audioEngine.setSoundMode(settings.soundMode)
             audioEngine.setMusicTrack(settings.musicTrack)
+            audioEngine.setMusicVolume(settings.musicVolume)
+            audioEngine.setSfxVolume(settings.sfxVolume)
             _playState.value = _playState.value.copy(settings = settings)
         }
     }
