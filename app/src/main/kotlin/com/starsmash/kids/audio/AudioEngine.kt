@@ -100,8 +100,10 @@ class AudioEngine(private val context: Context) {
 
     // User-settable volumes (0.0–1.0). The computed properties below apply
     // the guard ratio on top. Defaults match the original hardcoded constants.
-    var musicVolume: Float = MUSIC_VOLUME
-    var sfxVolume: Float = NORMAL_VOLUME
+    // @JvmField suppresses Kotlin setter generation so these don't clash with
+    // the explicit setMusicVolume() / setSfxVolume() functions below.
+    @JvmField var musicVolume: Float = MUSIC_VOLUME
+    @JvmField var sfxVolume: Float = NORMAL_VOLUME
 
     // Effective volumes accounting for the overstimulation guard.
     private val activeMusicVolume: Float
