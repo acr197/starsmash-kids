@@ -1,6 +1,7 @@
 package com.starsmash.kids.settings
 
 import android.content.Context
+import android.util.Log
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,11 +44,14 @@ object HighScoreStore {
 
     private const val PREFS_NAME = "starsmash_high_scores"
     private const val KEY_SCORES = "scores_v1"
+    private const val TAG = "HighScoreStore"
 
     /** Load the current high score list, sorted descending by score. */
     fun load(context: Context): List<HighScoreEntry> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val blob = prefs.getString(KEY_SCORES, null) ?: return emptyList()
+        val blob = prefs.getString(KEY_SCORES, null)
+        Log.d(TAG, "load() prefs=$PREFS_NAME key=$KEY_SCORES blob=${blob?.take(200) ?: "<null>"}")
+        if (blob == null) return emptyList()
         return blob.split('\n')
             .mapNotNull { line ->
                 val parts = line.split('|', limit = 3)
@@ -86,6 +90,7 @@ object HighScoreStore {
             .sortedWith(compareByDescending<HighScoreEntry> { it.score }.thenByDescending { it.epochMs })
             .take(MAX_ENTRIES)
         val blob = merged.joinToString("\n") { "${it.score}|${it.epochMs}|${it.name}" }
+        Log.d(TAG, "save() name=$cleanName score=$score totalEntries=${merged.size} blobPreview=${blob.take(200)}")
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_SCORES, blob)
