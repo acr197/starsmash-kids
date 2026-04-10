@@ -113,26 +113,9 @@ fun HomeScreen(
                             viewModel.setSoundMode(if (choice == "Calm") SoundMode.CALM else SoundMode.PLAYFUL)
                         }
                     )
-                    LabeledChoice(
-                        label = "Music",
-                        info = "Pick a looping background track. Changes apply instantly, even here in the menu.",
-                        options = listOf("Off", "Arcade", "Adventure", "Bubbly"),
-                        selected = when (settings.musicTrack) {
-                            MusicTrack.NONE -> "Off"
-                            MusicTrack.ARCADE -> "Arcade"
-                            MusicTrack.ADVENTURE -> "Adventure"
-                            MusicTrack.BUBBLE_POP -> "Bubbly"
-                        },
-                        onSelected = { choice ->
-                            viewModel.setMusicTrack(
-                                when (choice) {
-                                    "Arcade" -> MusicTrack.ARCADE
-                                    "Adventure" -> MusicTrack.ADVENTURE
-                                    "Bubbly" -> MusicTrack.BUBBLE_POP
-                                    else -> MusicTrack.NONE
-                                }
-                            )
-                        }
+                    MusicTrackCycler(
+                        currentTrack = settings.musicTrack,
+                        onCycle = viewModel::cycleMusicTrack
                     )
                 }
             }
@@ -727,6 +710,79 @@ private fun ChoiceButton(
                 softWrap = true,
                 maxLines = 2
             )
+        }
+    }
+}
+
+// ── Music track cycler ─────────────────────────────────────────────────────
+
+/**
+ * A single tappable button that cycles through the 5 music tracks (plus Off).
+ * Each tap advances to the next track and begins playing immediately.
+ *
+ * Track names (original filenames):
+ *   track_01 = "Going Up"
+ *   track_02 = "Heavier"
+ *   track_03 = "Ocean Bubbles"
+ *   track_04 = "Old School Arcade"
+ *   track_05 = "Trendy"
+ */
+@Composable
+private fun MusicTrackCycler(
+    currentTrack: MusicTrack,
+    onCycle: () -> Unit
+) {
+    val label = when (currentTrack) {
+        MusicTrack.NONE -> "Music: Off"
+        MusicTrack.TRACK_01 -> "Track 1: Going Up"
+        MusicTrack.TRACK_02 -> "Track 2: Heavier"
+        MusicTrack.TRACK_03 -> "Track 3: Ocean Bubbles"
+        MusicTrack.TRACK_04 -> "Track 4: Old School Arcade"
+        MusicTrack.TRACK_05 -> "Track 5: Trendy"
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 4.dp, bottom = 6.dp, top = 4.dp)
+        ) {
+            InfoIcon(
+                info = "Tap to cycle through 5 background tracks. Changes apply instantly.",
+                label = "Music"
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = "Music",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Surface(
+            onClick = onCycle,
+            shape = RoundedCornerShape(12.dp),
+            color = if (currentTrack != MusicTrack.NONE)
+                MaterialTheme.colorScheme.primary
+            else
+                MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = if (currentTrack != MusicTrack.NONE)
+                MaterialTheme.colorScheme.onPrimary
+            else
+                MaterialTheme.colorScheme.onSurfaceVariant,
+            tonalElevation = if (currentTrack != MusicTrack.NONE) 2.dp else 0.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 44.dp)
+        ) {
+            Box(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }

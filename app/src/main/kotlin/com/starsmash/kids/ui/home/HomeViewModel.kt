@@ -64,6 +64,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun setSoundMode(mode: SoundMode) = update { it.copy(soundMode = mode) }
     fun setTrailSoundEnabled(enabled: Boolean) = update { it.copy(trailSoundEnabled = enabled) }
     fun setMusicTrack(track: MusicTrack) = update { it.copy(musicTrack = track) }
+
+    /**
+     * Cycle to the next music track. Order: TRACK_01 → ... → TRACK_05 → NONE → TRACK_01.
+     * Called by the track selector button on the home screen.
+     */
+    fun cycleMusicTrack() {
+        val current = _settings.value.musicTrack
+        val next = when (current) {
+            MusicTrack.TRACK_01 -> MusicTrack.TRACK_02
+            MusicTrack.TRACK_02 -> MusicTrack.TRACK_03
+            MusicTrack.TRACK_03 -> MusicTrack.TRACK_04
+            MusicTrack.TRACK_04 -> MusicTrack.TRACK_05
+            MusicTrack.TRACK_05 -> MusicTrack.NONE
+            MusicTrack.NONE -> MusicTrack.TRACK_01
+        }
+        setMusicTrack(next)
+    }
     fun setEffectsIntensity(intensity: EffectsIntensity) = update { it.copy(effectsIntensity = intensity) }
     fun setTrailLength(length: TrailLength) = update { it.copy(trailLength = length) }
     fun setPlayTheme(theme: PlayTheme) = update { it.copy(playTheme = theme) }
