@@ -33,12 +33,10 @@ import java.io.File
  *     16-bit WAV files in the app cacheDir.
  *   - Playback goes through [android.media.SoundPool] which handles
  *     polyphony (up to [MAX_STREAMS] concurrent streams) natively.
- *   - Background music uses a dual-[MediaPlayer] approach with
- *     [MediaPlayer.setNextMediaPlayer] for gapless looping. The default
- *     [MediaPlayer.setLooping] can introduce a small silence on loop
- *     boundaries on many devices/API levels. The dual-buffer technique
- *     pre-prepares the next player so the codec seamlessly hands off
- *     at the exact sample boundary.
+ *   - Background music uses a single [MediaPlayer] with
+ *     [MediaPlayer.setLooping] = true. One player instance persists for
+ *     the lifetime of the current track, only recreated on explicit
+ *     track changes via [setMusicTrack].
  *   - All init happens off the main thread (caller's responsibility – the
  *     ViewModel calls [start] from a background coroutine).
  *
@@ -81,19 +79,10 @@ class AudioEngine(private val context: Context) {
     private val loadedClips = mutableSetOf<SoundSynth.Clip>()
     private val lastPlayTime = mutableMapOf<SoundSynth.Clip, Long>()
 
-    // Dual-MediaPlayer gapless looping: currentPlayer plays while nextPlayer
-    // is prepared and queued via setNextMediaPlayer(). On completion of
-    // currentPlayer we swap roles and queue a fresh next player.
+    // Single looping MediaPlayer: persists for the current track's lifetime.
     private var currentPlayer: MediaPlayer? = null
-    private var nextPlayer: MediaPlayer? = null
     private var musicTrack: MusicTrack = MusicTrack.TRACK_01
     private var currentMusicSpeed: Float = 1.0f
-
-    // Generation counter: incremented on every track switch so that completion
-    // callbacks from the previous track know to bail out instead of updating
-    // shared state. Prevents the race where onPlayerCompleted() fires between
-    // releaseAllPlayers() and the new track's players being assigned.
-    @Volatile private var musicGeneration: Int = 0
 
     private var soundMode: SoundMode = SoundMode.PLAYFUL
     private var isGuardActive: Boolean = false
@@ -145,12 +134,10 @@ class AudioEngine(private val context: Context) {
                 } catch (_: Throwable) {}
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // CAN_DUCK must never pause the music player. On some OEM
-                // devices SoundPool.play() triggers this event; pausing here
-                // permanently stops music if the expected AUDIOFOCUS_GAIN
-                // reply is never delivered. Music continues at its current
-                // volume – ducking is not required for a kids game.
-                hasAudioFocus = false
+                // CAN_DUCK: keep music playing at current volume. Don't
+                // pause or clear hasAudioFocus – SoundPool SFX can trigger
+                // duck events on some devices, and pausing/clearing focus
+                // here permanently stops music.
             }
         }
     }
@@ -220,7 +207,7 @@ class AudioEngine(private val context: Context) {
 
     private val musicAttributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_GAME)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
     }
@@ -243,71 +230,23 @@ class AudioEngine(private val context: Context) {
     }
 
     /**
-     * Start gapless music playback for [musicTrack] using the dual-player
-     * technique. Player A starts immediately; Player B is pre-prepared and
-     * chained via [MediaPlayer.setNextMediaPlayer]. On completion of A,
-     * B becomes the current player and a new "next" is queued.
-     *
-     * Increments [musicGeneration] so any in-flight completion callbacks
-     * from the previous track see a stale generation and exit without
-     * touching shared state.
+     * Start music playback for [musicTrack] using a single [MediaPlayer]
+     * with [isLooping] enabled. The player persists until an explicit
+     * track change or [stop].
      */
     private fun startMusicForCurrentTrack() {
-        // Stamp a new generation BEFORE releasing old players. Any completion
-        // callback that fires after this point will see a mismatched generation.
-        val gen = ++musicGeneration
         releaseAllPlayers()
 
         val resId = trackResId(musicTrack) ?: return
 
         try {
-            val a = createPreparedPlayer(resId) ?: return
-            val b = createPreparedPlayer(resId) ?: run {
-                a.release()
-                return
-            }
-            a.setNextMediaPlayer(b)
-            a.setOnCompletionListener { finished ->
-                onPlayerCompleted(finished, b, resId, gen)
-            }
-            currentPlayer = a
-            nextPlayer = b
+            val mp = createPreparedPlayer(resId) ?: return
+            currentPlayer = mp
             if (soundEnabled && musicTrack != MusicTrack.NONE) {
-                a.start()
+                mp.start()
             }
         } catch (_: Throwable) {
             releaseAllPlayers()
-        }
-    }
-
-    /**
-     * Called when the currently-playing MediaPlayer finishes. [gen] must
-     * match [musicGeneration] or the callback is stale (track switched) and
-     * we bail out immediately to avoid corrupting state.
-     *
-     * The queued [next] player is already playing (setNextMediaPlayer handles
-     * the seamless handoff). We release the finished player, promote [next]
-     * to current, and prepare a fresh next player.
-     */
-    private fun onPlayerCompleted(finished: MediaPlayer, next: MediaPlayer, resId: Int, gen: Int) {
-        try { finished.release() } catch (_: Throwable) {}
-        // Guard: if the track was switched since this callback was registered, stop here.
-        if (musicGeneration != gen) return
-        currentPlayer = next
-        try {
-            val fresh = createPreparedPlayer(resId)
-            if (fresh != null) {
-                next.setNextMediaPlayer(fresh)
-                next.setOnCompletionListener { f -> onPlayerCompleted(f, fresh, resId, gen) }
-                nextPlayer = fresh
-            } else {
-                // Fallback: let next loop via setLooping if we can't create a third.
-                next.isLooping = true
-                nextPlayer = null
-            }
-        } catch (_: Throwable) {
-            next.isLooping = true
-            nextPlayer = null
         }
     }
 
@@ -315,9 +254,6 @@ class AudioEngine(private val context: Context) {
         try { currentPlayer?.stop() } catch (_: Throwable) {}
         try { currentPlayer?.release() } catch (_: Throwable) {}
         currentPlayer = null
-        try { nextPlayer?.stop() } catch (_: Throwable) {}
-        try { nextPlayer?.release() } catch (_: Throwable) {}
-        nextPlayer = null
     }
 
     fun stop() {
@@ -366,8 +302,8 @@ class AudioEngine(private val context: Context) {
 
     /**
      * Change the active music track. If the new track is NONE the music
-     * stops. Otherwise the existing players are torn down and a fresh
-     * dual-player pair starts on the chosen track's loop.
+     * stops. Otherwise the existing player is released and a fresh
+     * one starts on the chosen track's loop.
      */
     fun setMusicTrack(track: MusicTrack) {
         if (musicTrack == track) return
@@ -386,7 +322,6 @@ class AudioEngine(private val context: Context) {
         val clamped = speed.coerceIn(1.0f, 2.0f)
         currentMusicSpeed = clamped
         applySpeed(currentPlayer, clamped)
-        applySpeed(nextPlayer, clamped)
     }
 
     private fun applySpeed(mp: MediaPlayer?, speed: Float) {
@@ -416,12 +351,11 @@ class AudioEngine(private val context: Context) {
         sfxVolume = volume.coerceIn(0f, 1f)
     }
 
-    /** Push the current [activeMusicVolume] to both live MediaPlayer instances. */
+    /** Push the current [activeMusicVolume] to the live MediaPlayer. */
     private fun applyMusicVolume() {
         val vol = activeMusicVolume
         try {
             currentPlayer?.setVolume(vol, vol)
-            nextPlayer?.setVolume(vol, vol)
         } catch (_: Throwable) {}
     }
 
@@ -453,11 +387,14 @@ class AudioEngine(private val context: Context) {
      * Other apps that respect audio focus will duck or pause when we hold it.
      */
     fun requestAudioFocus() {
+        if (hasAudioFocus) return
         val am = audioManager ?: return
+        // Abandon any stale request before building a new one.
+        audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
         val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
             )
