@@ -61,15 +61,17 @@ class AudioEngine(private val context: Context) {
         /** Minimum ms between successive plays of the SAME clip. */
         const val COOLDOWN_MS = 55L
 
-        /** SFX volume multiplier at normal level (0–1 SoundPool scale). */
+        /** Default SFX volume (0–1 SoundPool scale). */
         const val NORMAL_VOLUME = 0.9f
 
-        /** SFX volume when the overstimulation guard is active. */
-        const val GUARD_VOLUME = 0.45f
+        /** SFX guard ratio: guard volume = user SFX volume × this. */
+        private const val GUARD_SFX_RATIO = 0.5f // GUARD_VOLUME / NORMAL_VOLUME
 
-        /** Background music volume. */
+        /** Default background music volume. */
         const val MUSIC_VOLUME = 0.22f
-        const val MUSIC_VOLUME_GUARD = 0.12f
+
+        /** Music guard ratio: guard volume = user music volume × this. */
+        private const val GUARD_MUSIC_RATIO = 0.545f // ≈ MUSIC_VOLUME_GUARD / MUSIC_VOLUME
     }
 
     // ── State ─────────────────────────────────────────────────────────────
@@ -87,10 +89,25 @@ class AudioEngine(private val context: Context) {
     private var musicTrack: MusicTrack = MusicTrack.TRACK_01
     private var currentMusicSpeed: Float = 1.0f
 
+    // Generation counter: incremented on every track switch so that completion
+    // callbacks from the previous track know to bail out instead of updating
+    // shared state. Prevents the race where onPlayerCompleted() fires between
+    // releaseAllPlayers() and the new track's players being assigned.
+    @Volatile private var musicGeneration: Int = 0
+
     private var soundMode: SoundMode = SoundMode.PLAYFUL
     private var isGuardActive: Boolean = false
-    private var activeVolume: Float = NORMAL_VOLUME
-    private var activeMusicVolume: Float = MUSIC_VOLUME
+
+    // User-settable volumes (0.0–1.0). The computed properties below apply
+    // the guard ratio on top. Defaults match the original hardcoded constants.
+    var musicVolume: Float = MUSIC_VOLUME
+    var sfxVolume: Float = NORMAL_VOLUME
+
+    // Effective volumes accounting for the overstimulation guard.
+    private val activeMusicVolume: Float
+        get() = if (isGuardActive) (musicVolume * GUARD_MUSIC_RATIO).coerceIn(0f, 1f) else musicVolume
+    private val activeSfxVolume: Float
+        get() = if (isGuardActive) (sfxVolume * GUARD_SFX_RATIO).coerceIn(0f, 1f) else sfxVolume
 
     var soundEnabled: Boolean = true
     private var started: Boolean = false
@@ -220,9 +237,15 @@ class AudioEngine(private val context: Context) {
      * technique. Player A starts immediately; Player B is pre-prepared and
      * chained via [MediaPlayer.setNextMediaPlayer]. On completion of A,
      * B becomes the current player and a new "next" is queued.
+     *
+     * Increments [musicGeneration] so any in-flight completion callbacks
+     * from the previous track see a stale generation and exit without
+     * touching shared state.
      */
     private fun startMusicForCurrentTrack() {
-        // Tear down any existing players.
+        // Stamp a new generation BEFORE releasing old players. Any completion
+        // callback that fires after this point will see a mismatched generation.
+        val gen = ++musicGeneration
         releaseAllPlayers()
 
         val resId = trackResId(musicTrack) ?: return
@@ -235,7 +258,7 @@ class AudioEngine(private val context: Context) {
             }
             a.setNextMediaPlayer(b)
             a.setOnCompletionListener { finished ->
-                onPlayerCompleted(finished, b, resId)
+                onPlayerCompleted(finished, b, resId, gen)
             }
             currentPlayer = a
             nextPlayer = b
@@ -248,19 +271,24 @@ class AudioEngine(private val context: Context) {
     }
 
     /**
-     * Called when the currently-playing MediaPlayer finishes. The queued
-     * [next] player is already playing (setNextMediaPlayer handles the
-     * seamless handoff). We release the finished player, promote [next]
+     * Called when the currently-playing MediaPlayer finishes. [gen] must
+     * match [musicGeneration] or the callback is stale (track switched) and
+     * we bail out immediately to avoid corrupting state.
+     *
+     * The queued [next] player is already playing (setNextMediaPlayer handles
+     * the seamless handoff). We release the finished player, promote [next]
      * to current, and prepare a fresh next player.
      */
-    private fun onPlayerCompleted(finished: MediaPlayer, next: MediaPlayer, resId: Int) {
+    private fun onPlayerCompleted(finished: MediaPlayer, next: MediaPlayer, resId: Int, gen: Int) {
         try { finished.release() } catch (_: Throwable) {}
+        // Guard: if the track was switched since this callback was registered, stop here.
+        if (musicGeneration != gen) return
         currentPlayer = next
         try {
             val fresh = createPreparedPlayer(resId)
             if (fresh != null) {
                 next.setNextMediaPlayer(fresh)
-                next.setOnCompletionListener { f -> onPlayerCompleted(f, fresh, resId) }
+                next.setOnCompletionListener { f -> onPlayerCompleted(f, fresh, resId, gen) }
                 nextPlayer = fresh
             } else {
                 // Fallback: let next loop via setLooping if we can't create a third.
@@ -361,15 +389,36 @@ class AudioEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Set the background music volume (0.0–1.0). Applied immediately to any
+     * playing MediaPlayer instances.
+     */
+    fun setMusicVolume(volume: Float) {
+        musicVolume = volume.coerceIn(0f, 1f)
+        applyMusicVolume()
+    }
+
+    /**
+     * Set the SFX volume (0.0–1.0). Applied at the next clip playback since
+     * SoundPool reads the volume at play() time.
+     */
+    fun setSfxVolume(volume: Float) {
+        sfxVolume = volume.coerceIn(0f, 1f)
+    }
+
+    /** Push the current [activeMusicVolume] to both live MediaPlayer instances. */
+    private fun applyMusicVolume() {
+        val vol = activeMusicVolume
+        try {
+            currentPlayer?.setVolume(vol, vol)
+            nextPlayer?.setVolume(vol, vol)
+        } catch (_: Throwable) {}
+    }
+
     fun setGuardActive(active: Boolean) {
         if (isGuardActive == active) return
         isGuardActive = active
-        activeVolume = if (active) GUARD_VOLUME else NORMAL_VOLUME
-        activeMusicVolume = if (active) MUSIC_VOLUME_GUARD else MUSIC_VOLUME
-        try {
-            currentPlayer?.setVolume(activeMusicVolume, activeMusicVolume)
-            nextPlayer?.setVolume(activeMusicVolume, activeMusicVolume)
-        } catch (_: Throwable) {}
+        applyMusicVolume()
     }
 
     /**
@@ -492,7 +541,7 @@ class AudioEngine(private val context: Context) {
         lastPlayTime[clip] = now
 
         try {
-            pool.play(id, activeVolume, activeVolume, 1, 0, 1f)
+            pool.play(id, activeSfxVolume, activeSfxVolume, 1, 0, 1f)
         } catch (_: Throwable) {
             // Ignore – audio is non-critical.
         }

@@ -52,6 +52,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         audioEngine.soundEnabled = current.soundEnabled
         audioEngine.setSoundMode(current.soundMode)
         audioEngine.setMusicTrack(current.musicTrack)
+        audioEngine.setMusicVolume(current.musicVolume)
+        audioEngine.setSfxVolume(current.sfxVolume)
         audioEngine.setMusicSpeed(1.0f)
         viewModelScope.launch(Dispatchers.IO) {
             try { audioEngine.start() } catch (_: Throwable) {}
@@ -64,6 +66,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun setSoundMode(mode: SoundMode) = update { it.copy(soundMode = mode) }
     fun setTrailSoundEnabled(enabled: Boolean) = update { it.copy(trailSoundEnabled = enabled) }
     fun setMusicTrack(track: MusicTrack) = update { it.copy(musicTrack = track) }
+    fun setMusicVolume(volume: Float) = update { it.copy(musicVolume = volume) }
+    fun setSfxVolume(volume: Float) = update { it.copy(sfxVolume = volume) }
 
     /**
      * Cycle to the next music track. Order: TRACK_01 → ... → TRACK_05 → NONE → TRACK_01.
@@ -135,6 +139,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (prev.musicTrack != newSettings.musicTrack) {
             audioEngine.setMusicTrack(newSettings.musicTrack)
+        }
+        if (prev.musicVolume != newSettings.musicVolume) {
+            audioEngine.setMusicVolume(newSettings.musicVolume)
+        }
+        if (prev.sfxVolume != newSettings.sfxVolume) {
+            audioEngine.setSfxVolume(newSettings.sfxVolume)
         }
         viewModelScope.launch {
             AppSettings.save(getApplication(), newSettings)
