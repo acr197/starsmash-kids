@@ -6,6 +6,7 @@ import android.media.MediaPlayer
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.SoundPool
+import com.starsmash.kids.R
 import com.starsmash.kids.settings.MusicTrack
 import com.starsmash.kids.settings.SoundMode
 import com.starsmash.kids.touch.TouchEventType
@@ -16,7 +17,7 @@ import java.io.File
  * ===========
  *
  * Plays soft, playful sound effects in response to touch events, and an
- * optional procedurally-generated background music loop.
+ * optional background music loop loaded from Ogg Vorbis assets in res/raw.
  *
  * Sound design philosophy:
  *   - NO dial tones, beeps, or anything that sounds like a phone.
@@ -28,14 +29,28 @@ import java.io.File
  *     never plays twice in a row.
  *
  * Implementation:
- *   - Samples are generated in code by [SoundSynth] and cached as mono
+ *   - SFX samples are generated in code by [SoundSynth] and cached as mono
  *     16-bit WAV files in the app cacheDir.
  *   - Playback goes through [android.media.SoundPool] which handles
  *     polyphony (up to [MAX_STREAMS] concurrent streams) natively.
- *   - Background music uses [android.media.MediaPlayer] with looping,
- *     because SoundPool's max clip size is too restrictive for a ~12 s loop.
+ *   - Background music uses a dual-[MediaPlayer] approach with
+ *     [MediaPlayer.setNextMediaPlayer] for gapless looping. The default
+ *     [MediaPlayer.setLooping] can introduce a small silence on loop
+ *     boundaries on many devices/API levels. The dual-buffer technique
+ *     pre-prepares the next player so the codec seamlessly hands off
+ *     at the exact sample boundary.
  *   - All init happens off the main thread (caller's responsibility – the
  *     ViewModel calls [start] from a background coroutine).
+ *
+ * Music asset mapping (old procedural tracks removed):
+ *   track_01.ogg = "Going Up"
+ *   track_02.ogg = "Heavier"
+ *   track_03.ogg = "Ocean Bubbles"
+ *   track_04.ogg = "Old School Arcade"
+ *   track_05.ogg = "Trendy"
+ *
+ * Previously used procedural music files (removed):
+ *   ssk_music_arcade_v2.wav, ssk_music_adventure_v2.wav, ssk_music_bubble_pop_v2.wav
  */
 class AudioEngine(private val context: Context) {
 
@@ -64,8 +79,13 @@ class AudioEngine(private val context: Context) {
     private val loadedClips = mutableSetOf<SoundSynth.Clip>()
     private val lastPlayTime = mutableMapOf<SoundSynth.Clip, Long>()
 
-    private var musicPlayer: MediaPlayer? = null
-    private var musicTrack: MusicTrack = MusicTrack.ARCADE
+    // Dual-MediaPlayer gapless looping: currentPlayer plays while nextPlayer
+    // is prepared and queued via setNextMediaPlayer(). On completion of
+    // currentPlayer we swap roles and queue a fresh next player.
+    private var currentPlayer: MediaPlayer? = null
+    private var nextPlayer: MediaPlayer? = null
+    private var musicTrack: MusicTrack = MusicTrack.TRACK_01
+    private var currentMusicSpeed: Float = 1.0f
 
     private var soundMode: SoundMode = SoundMode.PLAYFUL
     private var isGuardActive: Boolean = false
@@ -89,7 +109,7 @@ class AudioEngine(private val context: Context) {
                 if (pausedByFocusLoss) {
                     pausedByFocusLoss = false
                     try {
-                        val mp = musicPlayer ?: return@OnAudioFocusChangeListener
+                        val mp = currentPlayer ?: return@OnAudioFocusChangeListener
                         if (soundEnabled && musicTrack != MusicTrack.NONE && !mp.isPlaying) {
                             mp.start()
                         }
@@ -102,7 +122,7 @@ class AudioEngine(private val context: Context) {
                 hasAudioFocus = false
                 pausedByFocusLoss = true
                 try {
-                    val mp = musicPlayer ?: return@OnAudioFocusChangeListener
+                    val mp = currentPlayer ?: return@OnAudioFocusChangeListener
                     if (mp.isPlaying) mp.pause()
                 } catch (_: Throwable) {}
             }
@@ -158,56 +178,114 @@ class AudioEngine(private val context: Context) {
             // back to silence rather than crashing the app.
         }
 
-        // Start background music for the current track (async - safe to fail).
+        // Start background music for the current track.
         startMusicForCurrentTrack()
     }
 
-    private fun startMusicForCurrentTrack() {
-        // Tear down any existing player first.
-        try { musicPlayer?.stop() } catch (_: Throwable) {}
-        try { musicPlayer?.release() } catch (_: Throwable) {}
-        musicPlayer = null
+    /** Resolve a [MusicTrack] to its res/raw resource ID, or null for NONE. */
+    private fun trackResId(track: MusicTrack): Int? = when (track) {
+        MusicTrack.TRACK_01 -> R.raw.track_01
+        MusicTrack.TRACK_02 -> R.raw.track_02
+        MusicTrack.TRACK_03 -> R.raw.track_03
+        MusicTrack.TRACK_04 -> R.raw.track_04
+        MusicTrack.TRACK_05 -> R.raw.track_05
+        MusicTrack.NONE -> null
+    }
 
-        if (musicTrack == MusicTrack.NONE) return
+    private val musicAttributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+    }
 
-        val style = when (musicTrack) {
-            MusicTrack.ARCADE -> SoundSynth.MusicStyle.ARCADE
-            MusicTrack.ADVENTURE -> SoundSynth.MusicStyle.ADVENTURE
-            MusicTrack.BUBBLE_POP -> SoundSynth.MusicStyle.BUBBLE_POP
-            MusicTrack.NONE -> return
-        }
-        try {
-            val musicFile = SoundSynth.generateMusicLoop(
-                File(context.cacheDir, "ssk_music"), style
-            )
-            val mp = MediaPlayer()
-            mp.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                    .build()
-            )
-            mp.setDataSource(musicFile.absolutePath)
-            mp.isLooping = true
+    /**
+     * Create and synchronously prepare a [MediaPlayer] for the given raw
+     * resource. Returns null if anything goes wrong.
+     */
+    private fun createPreparedPlayer(resId: Int): MediaPlayer? {
+        return try {
+            val mp = MediaPlayer.create(context, resId, musicAttributes, 0)
+                ?: return null
             mp.setVolume(activeMusicVolume, activeMusicVolume)
-            mp.setOnPreparedListener {
-                if (soundEnabled && musicTrack != MusicTrack.NONE) {
-                    try { it.start() } catch (_: Throwable) {}
-                }
-            }
-            mp.prepareAsync()
-            musicPlayer = mp
+            applySpeed(mp, currentMusicSpeed)
+            mp
         } catch (_: Throwable) {
-            musicPlayer = null
+            null
         }
+    }
+
+    /**
+     * Start gapless music playback for [musicTrack] using the dual-player
+     * technique. Player A starts immediately; Player B is pre-prepared and
+     * chained via [MediaPlayer.setNextMediaPlayer]. On completion of A,
+     * B becomes the current player and a new "next" is queued.
+     */
+    private fun startMusicForCurrentTrack() {
+        // Tear down any existing players.
+        releaseAllPlayers()
+
+        val resId = trackResId(musicTrack) ?: return
+
+        try {
+            val a = createPreparedPlayer(resId) ?: return
+            val b = createPreparedPlayer(resId) ?: run {
+                a.release()
+                return
+            }
+            a.setNextMediaPlayer(b)
+            a.setOnCompletionListener { finished ->
+                onPlayerCompleted(finished, b, resId)
+            }
+            currentPlayer = a
+            nextPlayer = b
+            if (soundEnabled && musicTrack != MusicTrack.NONE) {
+                a.start()
+            }
+        } catch (_: Throwable) {
+            releaseAllPlayers()
+        }
+    }
+
+    /**
+     * Called when the currently-playing MediaPlayer finishes. The queued
+     * [next] player is already playing (setNextMediaPlayer handles the
+     * seamless handoff). We release the finished player, promote [next]
+     * to current, and prepare a fresh next player.
+     */
+    private fun onPlayerCompleted(finished: MediaPlayer, next: MediaPlayer, resId: Int) {
+        try { finished.release() } catch (_: Throwable) {}
+        currentPlayer = next
+        try {
+            val fresh = createPreparedPlayer(resId)
+            if (fresh != null) {
+                next.setNextMediaPlayer(fresh)
+                next.setOnCompletionListener { f -> onPlayerCompleted(f, fresh, resId) }
+                nextPlayer = fresh
+            } else {
+                // Fallback: let next loop via setLooping if we can't create a third.
+                next.isLooping = true
+                nextPlayer = null
+            }
+        } catch (_: Throwable) {
+            next.isLooping = true
+            nextPlayer = null
+        }
+    }
+
+    private fun releaseAllPlayers() {
+        try { currentPlayer?.stop() } catch (_: Throwable) {}
+        try { currentPlayer?.release() } catch (_: Throwable) {}
+        currentPlayer = null
+        try { nextPlayer?.stop() } catch (_: Throwable) {}
+        try { nextPlayer?.release() } catch (_: Throwable) {}
+        nextPlayer = null
     }
 
     fun stop() {
         started = false
         abandonAudioFocus()
-        try { musicPlayer?.stop() } catch (_: Throwable) {}
-        try { musicPlayer?.release() } catch (_: Throwable) {}
-        musicPlayer = null
+        releaseAllPlayers()
 
         try { soundPool?.release() } catch (_: Throwable) {}
         soundPool = null
@@ -221,7 +299,7 @@ class AudioEngine(private val context: Context) {
      */
     fun pauseMusic() {
         try {
-            val mp = musicPlayer ?: return
+            val mp = currentPlayer ?: return
             if (mp.isPlaying) mp.pause()
         } catch (_: Throwable) {}
         abandonAudioFocus()
@@ -235,7 +313,7 @@ class AudioEngine(private val context: Context) {
         requestAudioFocus()
         if (!hasAudioFocus) return
         try {
-            val mp = musicPlayer ?: return
+            val mp = currentPlayer ?: return
             if (soundEnabled && musicTrack != MusicTrack.NONE && !mp.isPlaying) {
                 mp.start()
             }
@@ -250,8 +328,8 @@ class AudioEngine(private val context: Context) {
 
     /**
      * Change the active music track. If the new track is NONE the music
-     * stops. Otherwise the existing player is torn down and a fresh player
-     * starts on the chosen track's loop.
+     * stops. Otherwise the existing players are torn down and a fresh
+     * dual-player pair starts on the chosen track's loop.
      */
     fun setMusicTrack(track: MusicTrack) {
         if (musicTrack == track) return
@@ -262,17 +340,21 @@ class AudioEngine(private val context: Context) {
 
     /**
      * Adjust the playback rate of the background music. Used to speed up
-     * the tempo as gameplay progresses. Values are clamped to a safe range
-     * so the music never becomes comical.
+     * the tempo as gameplay progresses.
      *
-     * Note: setPlaybackParams requires API 23+. We wrap in try/catch so older
-     * devices (which we support down to minSdk 26 anyway) still work.
+     * Rate scales linearly: 1.0x at 0 stars → 2.0x at 150 stars, capped at 2.0x.
      */
     fun setMusicSpeed(speed: Float) {
-        val clamped = speed.coerceIn(0.85f, 3.0f)
-        val mp = musicPlayer ?: return
+        val clamped = speed.coerceIn(1.0f, 2.0f)
+        currentMusicSpeed = clamped
+        applySpeed(currentPlayer, clamped)
+        applySpeed(nextPlayer, clamped)
+    }
+
+    private fun applySpeed(mp: MediaPlayer?, speed: Float) {
+        if (mp == null) return
         try {
-            val params = mp.playbackParams.setSpeed(clamped)
+            val params = mp.playbackParams.setSpeed(speed)
             mp.playbackParams = params
         } catch (_: Throwable) {
             // Older Android / unsupported codec - silently ignore.
@@ -285,7 +367,8 @@ class AudioEngine(private val context: Context) {
         activeVolume = if (active) GUARD_VOLUME else NORMAL_VOLUME
         activeMusicVolume = if (active) MUSIC_VOLUME_GUARD else MUSIC_VOLUME
         try {
-            musicPlayer?.setVolume(activeMusicVolume, activeMusicVolume)
+            currentPlayer?.setVolume(activeMusicVolume, activeMusicVolume)
+            nextPlayer?.setVolume(activeMusicVolume, activeMusicVolume)
         } catch (_: Throwable) {}
     }
 
@@ -294,7 +377,7 @@ class AudioEngine(private val context: Context) {
      * the background music and mutes all SFX playback.
      */
     fun refreshSoundEnabled() {
-        val mp = musicPlayer ?: return
+        val mp = currentPlayer ?: return
         try {
             if (soundEnabled && musicTrack != MusicTrack.NONE) {
                 if (!mp.isPlaying) mp.start()

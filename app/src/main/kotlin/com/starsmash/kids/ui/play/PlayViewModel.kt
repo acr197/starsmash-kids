@@ -132,7 +132,7 @@ class PlayViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Sets the music tempo to reflect in-game progression. Called from
-     * PlayScreen each animation frame with a smooth ramp value in [1.0, 1.4].
+     * PlayScreen each animation frame. Rate = min(1.0 + score/150.0, 2.0).
      */
     fun setMusicSpeed(speed: Float) {
         audioEngine.setMusicSpeed(speed)

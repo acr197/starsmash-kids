@@ -303,8 +303,9 @@ fun PlayScreen(
             // 0-49 stars = 1x, 50-99 = 2x, 100-149 = 3x, 150+ = 4x.
             val speedMultiplier = (score / 50 + 1).coerceAtMost(4)
 
-            // Music playback speed follows the same multiplier, hard-capped at 3x.
-            val targetMusicSpeed = speedMultiplier.coerceAtMost(3).toFloat()
+            // Music playback rate scales linearly from 1.0x at 0 stars
+            // to 2.0x at 150 stars, capped at 2.0x.
+            val targetMusicSpeed = (1.0f + (score / 150.0f)).coerceAtMost(2.0f)
             if (kotlin.math.abs(targetMusicSpeed - lastMusicSpeed) > 0.01f) {
                 viewModel.setMusicSpeed(targetMusicSpeed)
                 lastMusicSpeed = targetMusicSpeed
