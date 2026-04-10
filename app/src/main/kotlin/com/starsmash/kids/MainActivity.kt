@@ -1,8 +1,11 @@
 package com.starsmash.kids
 
 import android.os.Bundle
+import android.app.ActivityManager
+import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import com.starsmash.kids.audio.AudioEngineHolder
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -36,6 +39,13 @@ import java.io.StringWriter
  * system bars or when the app returns from background.
  */
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Set to `true` while the child-facing play screen is active.
+     * When `true`, volume buttons are suppressed to prevent toddlers from
+     * changing the system volume during gameplay.
+     */
+    var isInPlayMode: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,6 +89,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Stop music when the app loses focus (screen lock, task switch, etc.)
+        // so no background service keeps audio alive after the app is inactive.
+        try {
+            AudioEngineHolder.get(applicationContext).pauseMusic()
+        } catch (_: Throwable) {}
+    }
+
     override fun onResume() {
         super.onResume()
         // Re-apply immersive mode on resume; Android can clear it when returning from
@@ -87,6 +106,10 @@ class MainActivity : ComponentActivity() {
             ImmersiveModeHelper.applyImmersiveMode(this)
         } catch (_: Throwable) {
         }
+        // Resume music only if AudioFocus is regained (managed inside AudioEngine).
+        try {
+            AudioEngineHolder.get(applicationContext).resumeMusic()
+        } catch (_: Throwable) {}
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -109,6 +132,68 @@ class MainActivity : ComponentActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // ── Toddler lock ───────────────────────────────────────────────────────
+    //
+    // PLATFORM LIMITATIONS (Android policy – cannot be worked around):
+    //
+    // • Power button: Android does NOT allow apps to intercept the power
+    //   button. This is a hard kernel/WindowManager limitation. Pressing
+    //   power will lock the screen; the app handles this gracefully via
+    //   onPause/onResume (music pauses, immersive mode restores on return).
+    //
+    // • Home button: Cannot be intercepted by any app since Android 4.0.
+    //   The ONLY way to block it is Android's Screen Pinning feature via
+    //   startLockTask(). Without device-owner privileges the system shows
+    //   a one-time confirmation dialog; the user can unpin by holding
+    //   Back + Recents simultaneously.
+    //
+    // • Recent-apps button: Same as home – only blocked by screen pinning.
+    //
+    // • Notification shade / bottom gesture bar: Sticky immersive mode
+    //   (already applied by ImmersiveModeHelper) auto-hides bars after a
+    //   brief reveal. Full suppression requires screen pinning.
+
+    /**
+     * Suppress volume keys during active gameplay so toddlers cannot change
+     * the system volume. All other keys pass through normally.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent?): Boolean {
+        if (isInPlayMode && event != null) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP,
+                KeyEvent.KEYCODE_VOLUME_DOWN,
+                KeyEvent.KEYCODE_VOLUME_MUTE -> return true // consume silently
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * Start Android screen pinning (lock task mode). Prevents the child from
+     * leaving the app via home, recents, or notifications.
+     *
+     * Without device-admin privileges the system shows a confirmation dialog
+     * the first time. minSdk 26 (API 26) supports startLockTask fully.
+     */
+    fun startScreenPinning() {
+        try {
+            startLockTask()
+        } catch (_: Throwable) {
+            // May fail if already pinned or if policy disallows it.
+        }
+    }
+
+    fun stopScreenPinning() {
+        try {
+            val am = getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+            if (am != null && am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE) {
+                stopLockTask()
+            }
+        } catch (_: Throwable) {
+            // SecurityException if not in lock task mode or not authorized.
         }
     }
 
