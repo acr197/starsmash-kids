@@ -30,6 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.starsmash.kids.settings.EffectsIntensity
@@ -118,6 +121,20 @@ fun PlayScreen(
     val playState by viewModel.playState.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) { viewModel.reloadSettings() }
+
+    // Pause music when the app goes to background / screen locks, resume on return.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> viewModel.audioEngine.pauseMusic()
+                Lifecycle.Event.ON_RESUME -> viewModel.audioEngine.resumeMusic()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val settings = playState.settings
 
@@ -254,13 +271,14 @@ fun PlayScreen(
 
             val elapsedSec = (currentFrameTime - firstFrameTime) / 1000f
             elapsedSecState = elapsedSec
-            // Difficulty ramps from the picked floor up to 1.6 over ~60s.
-            val difficulty = (difficultyStart + elapsedSec / 60f).coerceAtMost(1.6f)
+            // Difficulty ramps from the picked floor up to 8.0 over ~5 minutes.
+            // This gives roughly 5× peak speed vs the old 1.6 cap.
+            val difficulty = (difficultyStart + elapsedSec / 40f).coerceAtMost(8.0f)
 
-            // Music tempo ramps smoothly from 1.0x to 1.35x over ~2 minutes,
-            // then caps. Only update the engine once the value has changed
-            // meaningfully to avoid spamming MediaPlayer.setPlaybackParams.
-            val targetMusicSpeed = (1.0f + (elapsedSec / 150f)).coerceIn(1.0f, 1.35f)
+            // Music tempo ramps from 1.0x to 2.0x proportionally with the
+            // difficulty ramp so audio intensity matches visual speed.
+            val difficultyProgress = ((difficulty - difficultyStart) / (8.0f - difficultyStart)).coerceIn(0f, 1f)
+            val targetMusicSpeed = (1.0f + difficultyProgress).coerceIn(1.0f, 2.0f)
             if (kotlin.math.abs(targetMusicSpeed - lastMusicSpeed) > 0.01f) {
                 viewModel.setMusicSpeed(targetMusicSpeed)
                 lastMusicSpeed = targetMusicSpeed
@@ -313,7 +331,7 @@ fun PlayScreen(
 
             // Spawn targets from edges after the configured start delay.
             if (elapsedSec >= startDelaySec) {
-                val desiredCount = (3 + (difficulty * 5).toInt()).coerceIn(3, 12)
+                val desiredCount = (3 + (difficulty.coerceAtMost(2.5f) * 5).toInt()).coerceIn(3, 15)
                 if (targets.size < desiredCount) {
                     targets.add(
                         spawnFromEdge(
@@ -353,9 +371,12 @@ fun PlayScreen(
                                 anyNewPress = true
                                 lastPositions[id] = pos
 
+                                // Widen hit radius during multi-touch since
+                                // finger precision drops with 2+ fingers.
+                                val hitSlop = if (activeCount >= 2) 48f else 20f
                                 val hitIdx = targets.indexOfLast { t ->
                                     hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
-                                        .toFloat() <= t.radius + 20f
+                                        .toFloat() <= t.radius + hitSlop
                                 }
                                 if (hitIdx >= 0) {
                                     val hit = targets.removeAt(hitIdx)
@@ -403,9 +424,10 @@ fun PlayScreen(
                                             )
                                         }
                                         // Opportunistic target hit-check on drag.
+                                        val dragHitSlop = if (activeCount >= 2) 48f else 20f
                                         val hitIdx = targets.indexOfLast { t ->
                                             hypot((t.x - pos.x).toDouble(), (t.y - pos.y).toDouble())
-                                                .toFloat() <= t.radius + 20f
+                                                .toFloat() <= t.radius + dragHitSlop
                                         }
                                         if (hitIdx >= 0) {
                                             val hit = targets.removeAt(hitIdx)
@@ -666,7 +688,7 @@ private fun spawnFromEdge(
 ): FloatingTarget {
     val radius = 32f + rng.nextFloat() * 28f
     val baseSpeed = 0.8f + rng.nextFloat() * 1.4f
-    val speed = baseSpeed * difficulty.coerceAtLeast(0.5f)
+    val speed = baseSpeed * difficulty.coerceIn(0.5f, 1.6f)
 
     // Pick a random edge: 0=left, 1=right, 2=top, 3=bottom.
     val edge = rng.nextInt(4)

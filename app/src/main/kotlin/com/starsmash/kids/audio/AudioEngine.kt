@@ -175,6 +175,30 @@ class AudioEngine(private val context: Context) {
         loadedClips.clear()
     }
 
+    /**
+     * Pause music playback. Called when the app goes to background or the
+     * screen is locked so the music doesn't continue playing.
+     */
+    fun pauseMusic() {
+        try {
+            val mp = musicPlayer ?: return
+            if (mp.isPlaying) mp.pause()
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Resume music playback after a [pauseMusic] call, provided sound is
+     * still enabled and a music track is selected.
+     */
+    fun resumeMusic() {
+        try {
+            val mp = musicPlayer ?: return
+            if (soundEnabled && musicTrack != MusicTrack.NONE && !mp.isPlaying) {
+                mp.start()
+            }
+        } catch (_: Throwable) {}
+    }
+
     // ── Configuration ─────────────────────────────────────────────────────
 
     fun setSoundMode(mode: SoundMode) {
@@ -202,7 +226,7 @@ class AudioEngine(private val context: Context) {
      * devices (which we support down to minSdk 26 anyway) still work.
      */
     fun setMusicSpeed(speed: Float) {
-        val clamped = speed.coerceIn(0.85f, 1.45f)
+        val clamped = speed.coerceIn(0.85f, 2.0f)
         val mp = musicPlayer ?: return
         try {
             val params = mp.playbackParams.setSpeed(clamped)
