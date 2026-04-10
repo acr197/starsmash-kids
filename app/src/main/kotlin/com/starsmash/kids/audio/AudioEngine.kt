@@ -136,14 +136,21 @@ class AudioEngine(private val context: Context) {
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 hasAudioFocus = false
                 pausedByFocusLoss = true
                 try {
                     val mp = currentPlayer ?: return@OnAudioFocusChangeListener
                     if (mp.isPlaying) mp.pause()
                 } catch (_: Throwable) {}
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // CAN_DUCK must never pause the music player. On some OEM
+                // devices SoundPool.play() triggers this event; pausing here
+                // permanently stops music if the expected AUDIOFOCUS_GAIN
+                // reply is never delivered. Music continues at its current
+                // volume – ducking is not required for a kids game.
+                hasAudioFocus = false
             }
         }
     }
@@ -226,6 +233,7 @@ class AudioEngine(private val context: Context) {
         return try {
             val mp = MediaPlayer.create(context, resId, musicAttributes, 0)
                 ?: return null
+            mp.isLooping = true
             mp.setVolume(activeMusicVolume, activeMusicVolume)
             applySpeed(mp, currentMusicSpeed)
             mp
