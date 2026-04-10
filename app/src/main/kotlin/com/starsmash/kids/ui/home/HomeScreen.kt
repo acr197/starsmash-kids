@@ -28,6 +28,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalUriHandler
@@ -542,9 +543,11 @@ private fun RowDivider() {
 
 // ── Toggle row ───────────────────────────────────────────────────────────────
 //
-// The label supports press-and-hold to reveal the description text inline.
-// Release the label to dismiss. The Switch is a separate touch target and is
-// unaffected by the label's pointer input.
+// The label supports a deliberate ~500 ms hold to reveal the description text
+// inline (sticky – stays open until the user taps the label again to close it).
+// detectTapGestures self-cancels if the pointer moves beyond touchSlop, so a
+// scroll gesture is never mistaken for a hold and the parent LazyColumn is
+// never blocked. The Switch is a separate touch target and is unaffected.
 
 @Composable
 private fun MenuToggleRow(
@@ -568,13 +571,10 @@ private fun MenuToggleRow(
                 modifier = Modifier
                     .weight(1f)
                     .pointerInput(info) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                showInfo = event.changes.any { it.pressed }
-                                event.changes.forEach { it.consume() }
-                            }
-                        }
+                        detectTapGestures(
+                            onLongPress = { showInfo = !showInfo },
+                            onTap = { if (showInfo) showInfo = false }
+                        )
                     }
             )
             Switch(
@@ -605,7 +605,8 @@ private fun MenuToggleRow(
 //
 // Shows "Label  [Current ▾]" on a single line.
 // Tapping the value chip opens an inline dropdown listing all options.
-// Long-press on the label reveals the description; release dismisses it.
+// A deliberate ~500 ms hold on the label reveals the description (sticky);
+// a subsequent tap on the label dismisses it.
 
 @Composable
 private fun CollapsibleChoiceRow(
@@ -632,13 +633,10 @@ private fun CollapsibleChoiceRow(
                 modifier = Modifier
                     .weight(1f)
                     .pointerInput(info) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                showInfo = event.changes.any { it.pressed }
-                                event.changes.forEach { it.consume() }
-                            }
-                        }
+                        detectTapGestures(
+                            onLongPress = { showInfo = !showInfo },
+                            onTap = { if (showInfo) showInfo = false }
+                        )
                     }
             )
             Surface(
@@ -747,13 +745,10 @@ private fun VolumeSliderRow(
                 modifier = Modifier
                     .weight(1f)
                     .pointerInput(info) {
-                        awaitPointerEventScope {
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                showInfo = event.changes.any { it.pressed }
-                                event.changes.forEach { it.consume() }
-                            }
-                        }
+                        detectTapGestures(
+                            onLongPress = { showInfo = !showInfo },
+                            onTap = { if (showInfo) showInfo = false }
+                        )
                     }
             )
             Text(
