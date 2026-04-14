@@ -1,6 +1,8 @@
 # StarSmash Kids
 Android app for kids that uses AI to dynamically adjust gameplay and prevent overstimulation in real time.
 
+[60s demo](https://youtu.be/udJ4ATxBv0w)
+
 ## What It Does
 Lets kids smash freely on screen while an AI layer monitors session behavior and modifies the game state to keep engagement healthy. Adjusts difficulty, pacing, and stimulus intensity based on play patterns without interrupting the experience.
 
